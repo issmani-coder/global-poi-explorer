@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 
-const DISTANCE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20];
+// UPGRADED SLIDER STEPS (Up to 50km)
+const DISTANCE_STEPS = [1, 2, 3, 5, 8, 10, 15, 20, 25, 30, 40, 50];
+
 const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_KEY;
 const PEXELS_KEY = import.meta.env.VITE_PEXELS_API_KEY;
 const WEATHERBIT_KEY = import.meta.env.VITE_WEATHERBIT_KEY;
@@ -45,9 +47,14 @@ export default function ResultsScreen({ location, onGoBack }) {
   
   const [weatherData, setWeatherData] = useState(null);
   const [hourlyWeather, setHourlyWeather] = useState(null);
-  const [weatherWarnings, setWeatherWarnings] = useState({ active: false, messages: ["Fetching live alerts..."] });
   const [selectedWeatherDay, setSelectedWeatherDay] = useState(null);
   const [destinationImage, setDestinationImage] = useState(null);
+  
+  // Weather Alerts Structure Updated for Links
+  const [weatherWarnings, setWeatherWarnings] = useState({ 
+      active: false, 
+      alerts: [{ title: "Fetching live alerts...", uri: null }] 
+  });
   
   const [bgImages, setBgImages] = useState([]);
   const [currentBgIndex, setCurrentBgIndex] = useState(0);
@@ -57,8 +64,10 @@ export default function ResultsScreen({ location, onGoBack }) {
   const [bulkScraping, setBulkScraping] = useState({ group: null, current: 0, total: 0 });
   const cancelScrapeRef = useRef(false);
 
-  const [visualRadiusIndex, setVisualRadiusIndex] = useState(0); 
-  const [appliedRadiusIndex, setAppliedRadiusIndex] = useState(0); 
+  // START AT INDEX 3 (5 km) INSTEAD OF 1 km
+  const [visualRadiusIndex, setVisualRadiusIndex] = useState(3); 
+  const [appliedRadiusIndex, setAppliedRadiusIndex] = useState(3); 
+  
   const [minRating, setMinRating] = useState(0);
   const [sortBy, setSortBy] = useState('distance'); 
   const [activeCategories, setActiveCategories] = useState({
@@ -68,9 +77,8 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v27`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v28`;
 
-  // PEXELS ROTATING BACKGROUND
   useEffect(() => {
     if (PEXELS_KEY && location?.name) {
         const coreName = location.name.split(',')[0].trim() + " city";
@@ -88,11 +96,12 @@ export default function ResultsScreen({ location, onGoBack }) {
 
   useEffect(() => {
     if (bgImages.length <= 1) return;
-    const interval = setInterval(() => setCurrentBgIndex((prev) => (prev + 1) % bgImages.length), 5000);
+    const interval = setInterval(() => {
+        setCurrentBgIndex((prev) => (prev + 1) % bgImages.length);
+    }, 5000);
     return () => clearInterval(interval);
   }, [bgImages]);
 
-  // Debounced Slider
   useEffect(() => {
     const timer = setTimeout(() => {
         if (visualRadiusIndex !== appliedRadiusIndex) setAppliedRadiusIndex(visualRadiusIndex);
@@ -117,7 +126,6 @@ export default function ResultsScreen({ location, onGoBack }) {
     return { name: sourceStr, icon: '🌐', color: '#666' };
   };
 
-  // DESTINATION PHOTO, WEATHER, & ALERTS
   useEffect(() => {
     if (!location?.lat || !location?.lon) return;
 
@@ -171,17 +179,26 @@ export default function ResultsScreen({ location, onGoBack }) {
             if (res.ok) {
                 const data = await res.json();
                 if (data.alerts && data.alerts.length > 0) {
-                    const alertTitles = [...new Set(data.alerts.map(alert => alert.title))];
-                    setWeatherWarnings({ active: true, messages: alertTitles });
+                    
+                    // Map over alerts to pull title and link. If no link exists, generate a Google Search URL.
+                    const mappedAlerts = data.alerts.map(a => ({
+                        title: a.title,
+                        uri: a.uri || `https://www.google.com/search?q=${encodeURIComponent(a.title + ' weather alert ' + location.name)}`
+                    }));
+                    
+                    // Remove duplicates by title so we don't spam the UI
+                    const uniqueAlerts = Array.from(new Map(mappedAlerts.map(item => [item.title, item])).values());
+                    
+                    setWeatherWarnings({ active: true, alerts: uniqueAlerts });
                 } else {
-                    setWeatherWarnings({ active: false, messages: ["No active severe weather warnings for this location."] });
+                    setWeatherWarnings({ active: false, alerts: [{ title: "No active severe weather warnings for this location.", uri: null }] });
                 }
             } else {
-                setWeatherWarnings({ active: false, messages: ["Unable to fetch live alerts at this time."] });
+                setWeatherWarnings({ active: false, alerts: [{ title: "Unable to fetch live alerts at this time.", uri: null }] });
             }
         } catch(e) { 
             console.warn("Weatherbit fetch failed", e); 
-            setWeatherWarnings({ active: false, messages: ["Live alert server unreachable."] });
+            setWeatherWarnings({ active: false, alerts: [{ title: "Live alert server unreachable.", uri: null }] });
         }
     };
 
@@ -245,7 +262,6 @@ export default function ResultsScreen({ location, onGoBack }) {
       );
   };
 
-  // --- FETCH MAP POIs & SUPABASE CHECK ---
   useEffect(() => {
     let isMounted = true;
     const fetchPOIs = async () => {
@@ -305,7 +321,6 @@ export default function ResultsScreen({ location, onGoBack }) {
         const finalPlaces = processedPlaces.filter(p => p.group !== 'Other');
 
         if (finalPlaces.length > 0) {
-            // ⚡ THE SUPABASE BULK CHECK ⚡
             const placeIds = finalPlaces.map(p => p.id);
             const { data: dbCache } = await supabase.from('poi_data').select('*').in('place_id', placeIds);
 
@@ -318,7 +333,7 @@ export default function ResultsScreen({ location, onGoBack }) {
                         if (cachedMatch.photo_ref) place.photoUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${cachedMatch.photo_ref}`;
                         if (cachedMatch.description) place.description = cachedMatch.description;
                         place.source = cachedMatch.source;
-                        place.needsRealData = false; // Prevents re-fetching
+                        place.needsRealData = false; 
                     }
                 });
             }
@@ -326,7 +341,7 @@ export default function ResultsScreen({ location, onGoBack }) {
 
         if (isMounted) {
             setPlaces(finalPlaces); 
-            if (finalPlaces.length === 0) setApiError("No places found in this area.");
+            if (finalPlaces.length === 0) setApiError("No places found in this area. Try increasing the radius.");
             else safeSetLocalStorage(cacheKey, JSON.stringify(finalPlaces));
         }
       } catch (error) {
@@ -358,7 +373,6 @@ export default function ResultsScreen({ location, onGoBack }) {
         let finalImageUrl = null;
         if (realData.scraped_photo_ref) finalImageUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${realData.scraped_photo_ref}`;
 
-        // ⚡ SAVE TO SUPABASE FOR THE FUTURE ⚡
         if (!realData.error) {
             await supabase.from('poi_data').upsert({
                 place_id: placeId,
@@ -594,14 +608,16 @@ export default function ResultsScreen({ location, onGoBack }) {
                     
                     {renderHourlyForecast()}
                     
-                    {/* WEATHERBIT LIVE ALERTS UI */}
+                    {/* WEATHERBIT LIVE ALERTS UI - NOW WITH LINKS */}
                     <div style={{ marginTop: '10px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
                         {weatherWarnings.active ? (
-                            weatherWarnings.messages.map((msg, i) => (
-                                <span key={i} style={{ color: '#d32323', fontWeight: 'bold' }}>⚠️ {msg}</span>
+                            weatherWarnings.alerts.map((alert, i) => (
+                                <a key={i} href={alert.uri} target="_blank" rel="noopener noreferrer" style={{ color: '#d32323', fontWeight: 'bold', textDecoration: 'underline', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    ⚠️ {alert.title} <span style={{fontSize: '10px'}}>↗</span>
+                                </a>
                             ))
                         ) : (
-                            <span style={{ color: '#2b8a3e', fontWeight: 'bold' }}>✅ {weatherWarnings.messages[0]}</span>
+                            <span style={{ color: '#2b8a3e', fontWeight: 'bold' }}>✅ {weatherWarnings.alerts[0]?.title}</span>
                         )}
                     </div>
                 </div>
@@ -616,7 +632,7 @@ export default function ResultsScreen({ location, onGoBack }) {
             <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Search Results:</label> <input type="text" placeholder="e.g. Pizza, Museum..." value={localSearchQuery} onChange={(e) => setLocalSearchQuery(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '5px', border: '1px solid #ccc', boxSizing: 'border-box' }} /> </div>
             <div style={{ marginBottom: '25px' }}> 
                 <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Radius: {visualRadiusKm} km</label> 
-                <input type="range" min="0" max="11" step="1" value={visualRadiusIndex} onChange={(e) => setVisualRadiusIndex(Number(e.target.value))} style={{ width: '100%', cursor: 'pointer' }} /> 
+                <input type="range" min="0" max={DISTANCE_STEPS.length - 1} step="1" value={visualRadiusIndex} onChange={(e) => setVisualRadiusIndex(Number(e.target.value))} style={{ width: '100%', cursor: 'pointer' }} /> 
                 {places.length === 500 && ( <div style={{ fontSize: '11px', color: '#e03131', marginTop: '5px', fontWeight: 'bold', textAlign: 'center', backgroundColor: '#ffe3e3', padding: '5px', borderRadius: '4px' }}> ⚠️ API Limit: Max 500 places reached. </div> )}
             </div>
             <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Min. Rating: {minRating} ⭐</label> <input type="range" min="0" max="5" step="0.5" value={minRating} onChange={(e) => setMinRating(Number(e.target.value))} style={{ width: '100%' }} /> </div>
