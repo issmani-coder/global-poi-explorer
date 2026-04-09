@@ -74,7 +74,6 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  // Cache bumped to v31 to clear corrupted URL caches
   const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v31`;
 
   useEffect(() => {
@@ -337,7 +336,6 @@ export default function ResultsScreen({ location, onGoBack }) {
                     if (cachedMatch) {
                         place.rating = cachedMatch.rating;
                         place.reviews = cachedMatch.reviews;
-                        // ⚡ BUG FIX: Proper URL Encoding for Google Photo References!
                         if (cachedMatch.photo_ref && cachedMatch.photo_ref !== 'null' && cachedMatch.photo_ref !== 'undefined') {
                             place.photoUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${encodeURIComponent(cachedMatch.photo_ref)}`;
                         }
@@ -382,7 +380,6 @@ export default function ResultsScreen({ location, onGoBack }) {
         const realData = await response.json();
         let finalImageUrl = null;
         
-        // ⚡ BUG FIX: Proper URL Encoding applied here too!
         if (realData.scraped_photo_ref && realData.scraped_photo_ref !== 'null') {
             finalImageUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${encodeURIComponent(realData.scraped_photo_ref)}`;
         }
@@ -424,27 +421,39 @@ export default function ResultsScreen({ location, onGoBack }) {
     }
   };
 
+  // ⚡ FIX: BATCHED SCRAPING WITH DELAYS TO PREVENT RATE LIMITING ⚡
   const fetchRealDataForCategory = async (groupName) => {
       const targets = places.filter(p => p.group === groupName && p.needsRealData);
       if (targets.length === 0) return;
+      
       cancelScrapeRef.current = false;
       setBulkScraping({ group: groupName, current: 0, total: targets.length });
 
-      let completedCount = 0; let index = 0;
+      let completedCount = 0; 
+      let index = 0;
+      
       const worker = async () => {
           while (index < targets.length && !cancelScrapeRef.current) {
               const targetIndex = index++;
               await fetchRealDataForPlace(targets[targetIndex].id, targets[targetIndex].tags.name, targets[targetIndex].group);
+              
               if (!cancelScrapeRef.current) {
                   completedCount++;
                   setBulkScraping({ group: groupName, current: completedCount, total: targets.length });
               }
+              
+              // ⚡ MANDATORY COOLDOWN: 1.5 seconds between each request to prevent timeouts
+              await new Promise(resolve => setTimeout(resolve, 1500));
           }
       };
 
-      const workers = Array(3).fill(0).map(() => worker()); 
+      // ⚡ CONCURRENCY DROP: Running 2 workers instead of 3 to ease server load
+      const workers = Array(2).fill(0).map(() => worker()); 
       await Promise.all(workers);
-      if (!cancelScrapeRef.current) setBulkScraping({ group: null, current: 0, total: 0 });
+      
+      if (!cancelScrapeRef.current) {
+          setBulkScraping({ group: null, current: 0, total: 0 });
+      }
   };
 
   const cancelBulkScrape = () => {
@@ -499,7 +508,6 @@ export default function ResultsScreen({ location, onGoBack }) {
     return (
       <div key={place.id} style={{ backgroundColor: 'white', border: '1px solid #ddd', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 2px 5px rgba(0,0,0,0.05)', marginBottom: '15px', display: 'flex', flexDirection: 'column' }} >
         <div style={{ position: 'relative' }}>
-            {/* ⚡ BUG FIX: onError handler gracefully catches Render timeouts and shows a placeholder instead of a broken white box! */}
             <img 
                 src={place.photoUrl} 
                 alt="Location" 
