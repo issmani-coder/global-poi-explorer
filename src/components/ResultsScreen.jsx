@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 
 const DISTANCE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20];
 const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_KEY;
-const UNSPLASH_KEY = import.meta.env.VITE_UNSPLASH_API_KEY;
+const PEXELS_KEY = import.meta.env.VITE_PEXELS_API_KEY;
 const PYTHON_BACKEND_URL = 'https://global-poi-explorer.onrender.com';
 
 const safeSetLocalStorage = (key, value) => {
@@ -34,6 +34,28 @@ const getWeatherInfo = (code) => {
     return { icon: '🌤️', text: 'Unknown' };
 };
 
+// OUR NEW ALGORITHMIC WARNING SYSTEM
+const generateWeatherWarnings = (forecastData) => {
+    if (!forecastData || forecastData.length === 0) return { active: false, messages: [] };
+    
+    let warnings = [];
+    // Only check the next 48 hours for immediate severe warnings
+    const checkDays = forecastData.slice(0, 2);
+    
+    checkDays.forEach(day => {
+        if (day.maxTemp >= 38) warnings.push(`Extreme Heat (${day.maxTemp}°C) expected.`);
+        if (day.minTemp <= -5) warnings.push(`Freezing Conditions (${day.minTemp}°C) expected.`);
+        if (day.wind >= 70) warnings.push(`High Winds (${day.wind} km/h) expected.`);
+        if (day.rain >= 40) warnings.push(`Heavy Rain (${day.rain}mm) expected.`);
+        if ([95, 96, 99].includes(day.weatherCode)) warnings.push(`Thunderstorms expected.`);
+    });
+
+    warnings = [...new Set(warnings)]; // Remove duplicates
+    
+    if (warnings.length > 0) return { active: true, messages: warnings };
+    return { active: false, messages: ["No severe conditions expected in the next 48 hours."] };
+};
+
 export default function ResultsScreen({ location, onGoBack }) {
   const [places, setPlaces] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -43,10 +65,10 @@ export default function ResultsScreen({ location, onGoBack }) {
   
   const [weatherData, setWeatherData] = useState(null);
   const [hourlyWeather, setHourlyWeather] = useState(null);
+  const [weatherWarnings, setWeatherWarnings] = useState({ active: false, messages: [] });
   const [selectedWeatherDay, setSelectedWeatherDay] = useState(null);
   const [destinationImage, setDestinationImage] = useState(null);
   
-  // Rotating Unsplash Background State
   const [bgImages, setBgImages] = useState([]);
   const [currentBgIndex, setCurrentBgIndex] = useState(0);
   
@@ -66,18 +88,23 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v24`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v25`;
 
-  // --- 1. ROTATING BACKGROUND FETCH (PRE-LOADED LAYER FIX) ---
+  // PEXELS BACKGROUND FETCHER
   useEffect(() => {
-    if (UNSPLASH_KEY) {
-        fetch(`https://api.unsplash.com/photos/random?count=10&query=travel,city,landscape&orientation=landscape&client_id=${UNSPLASH_KEY}`)
-            .then(res => res.json())
-            .then(data => {
-                if (Array.isArray(data)) setBgImages(data.map(img => img.urls.regular));
-            }).catch(e => console.warn("Unsplash fetch failed", e));
+    if (PEXELS_KEY && location?.name) {
+        const coreName = location.name.split(',')[0].trim() + " city";
+        fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(coreName)}&per_page=10&orientation=landscape`, {
+            headers: { Authorization: PEXELS_KEY }
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.photos && data.photos.length > 0) {
+                setBgImages(data.photos.map(img => img.src.large2x || img.src.large));
+            }
+        }).catch(e => console.warn("Pexels fetch failed", e));
     }
-  }, []);
+  }, [location]);
 
   useEffect(() => {
     if (bgImages.length <= 1) return;
@@ -111,7 +138,6 @@ export default function ResultsScreen({ location, onGoBack }) {
     return { name: sourceStr, icon: '🌐', color: '#666' };
   };
 
-  // --- 2. DESTINATION PHOTO & UPGRADED WEATHER ---
   useEffect(() => {
     if (!location?.lat || !location?.lon) return;
 
@@ -130,7 +156,6 @@ export default function ResultsScreen({ location, onGoBack }) {
 
     const fetchWeather = async () => {
         try {
-            // UPDATED API URL TO INCLUDE ALL REQUESTED PARAMETERS
             const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant,uv_index_max,sunshine_duration,daylight_duration,precipitation_hours&hourly=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,visibility,uv_index&timezone=auto`;
             const res = await fetch(weatherUrl);
             const data = await res.json();
@@ -149,12 +174,14 @@ export default function ResultsScreen({ location, onGoBack }) {
                 wind: data.daily.wind_speed_10m_max[index],
                 windDir: getWindDirection(data.daily.wind_direction_10m_dominant[index]),
                 uv: data.daily.uv_index_max[index],
-                sunshine: (data.daily.sunshine_duration[index] / 3600).toFixed(1), // Convert seconds to hours
-                daylight: (data.daily.daylight_duration[index] / 3600).toFixed(1) // Convert seconds to hours
+                sunshine: (data.daily.sunshine_duration[index] / 3600).toFixed(1), 
+                daylight: (data.daily.daylight_duration[index] / 3600).toFixed(1) 
             }));
             
             setWeatherData(forecast);
             setHourlyWeather(data.hourly);
+            setWeatherWarnings(generateWeatherWarnings(forecast)); // Trigger Warning Algorithm
+
         } catch(e) { console.warn("Weather fetch failed", e); }
     };
 
@@ -217,7 +244,6 @@ export default function ResultsScreen({ location, onGoBack }) {
       );
   };
 
-  // --- 3. FETCH MAP POIs ---
   useEffect(() => {
     let isMounted = true;
     const fetchPOIs = async () => {
@@ -462,7 +488,6 @@ export default function ResultsScreen({ location, onGoBack }) {
     );
   };
 
-  // --- 4. THE LAYOUT FIX: THE "FRAME" ---
   const fallbackBg = 'https://images.unsplash.com/photo-1524661135-423995f22d0b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80';
   
   const wrapperStyle = {
@@ -476,7 +501,6 @@ export default function ResultsScreen({ location, onGoBack }) {
 
   return (
     <div style={wrapperStyle}>
-      {/* Pre-rendered Image Layers for Smooth Crossfading */}
       {bgImages.length > 0 ? bgImages.map((img, i) => (
           <div key={img} style={{ position: 'absolute', inset: 0, backgroundImage: `url(${img})`, backgroundSize: 'cover', backgroundPosition: 'center', opacity: currentBgIndex === i ? 1 : 0, transition: 'opacity 1.5s ease-in-out', zIndex: -2 }} />
       )) : ( <div style={{ position: 'absolute', inset: 0, backgroundImage: `url(${fallbackBg})`, backgroundSize: 'cover', backgroundPosition: 'center', zIndex: -2 }} /> )}
@@ -529,9 +553,18 @@ export default function ResultsScreen({ location, onGoBack }) {
                             );
                         })}
                     </div>
+                    
                     {renderHourlyForecast()}
-                    <div style={{ marginTop: '10px', fontSize: '11px', color: '#2b8a3e', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                        ✅ No active severe weather warnings for this location.
+                    
+                    {/* DYNAMIC WARNING SYSTEM UI */}
+                    <div style={{ marginTop: '10px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                        {weatherWarnings.active ? (
+                            weatherWarnings.messages.map((msg, i) => (
+                                <span key={i} style={{ color: '#d32323', fontWeight: 'bold' }}>⚠️ {msg}</span>
+                            ))
+                        ) : (
+                            <span style={{ color: '#2b8a3e', fontWeight: 'bold' }}>✅ {weatherWarnings.messages[0]}</span>
+                        )}
                     </div>
                 </div>
             )}
