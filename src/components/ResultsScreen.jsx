@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 
 const DISTANCE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20];
-const GEOAPIFY_KEY = 'b98c61769e0f409e96eeb554e64de281';
+
+// Securely pulling the key from your .env file
+const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_KEY;
 
 // 👇 Make sure this is your LIVE Python URL 👇
 const PYTHON_BACKEND_URL = 'https://global-poi-explorer.onrender.com';
@@ -16,7 +18,6 @@ const safeSetLocalStorage = (key, value) => {
   }
 };
 
-// Helper to convert Open-Meteo codes to Icons and Text
 const getWeatherInfo = (code) => {
     if (code === 0) return { icon: '☀️', text: 'Clear' };
     if ([1, 2, 3].includes(code)) return { icon: '⛅', text: 'Cloudy' };
@@ -36,8 +37,9 @@ export default function ResultsScreen({ location, onGoBack }) {
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [apiError, setApiError] = useState(null); 
   
-  // New States for Enhancements
   const [weatherData, setWeatherData] = useState(null);
+  const [hourlyWeather, setHourlyWeather] = useState(null);
+  const [selectedWeatherDay, setSelectedWeatherDay] = useState(null);
   const [destinationImage, setDestinationImage] = useState(null);
   
   const [localSearchQuery, setLocalSearchQuery] = useState('');
@@ -56,7 +58,16 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v21`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v22`;
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+        if (visualRadiusIndex !== appliedRadiusIndex) {
+            setAppliedRadiusIndex(visualRadiusIndex);
+        }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [visualRadiusIndex, appliedRadiusIndex]);
 
   const categorizePlace = (categoriesArray) => {
     if (!categoriesArray) return { group: 'Other', icon: '📍', label: 'Spot' };
@@ -75,30 +86,31 @@ export default function ResultsScreen({ location, onGoBack }) {
     return { name: sourceStr, icon: '🌐', color: '#666' };
   };
 
-  // --- FETCH DESTINATION IMAGE & WEATHER ---
   useEffect(() => {
     if (!location?.lat || !location?.lon) return;
 
-    // 1. Fetch free Wikipedia Image for the city
     const fetchCityImage = async () => {
         try {
-            const res = await fetch(`https://en.wikipedia.org/w/api.php?action=query&prop=pageimages&format=json&piprop=original&titles=${encodeURIComponent(location.name.split(',')[0])}&origin=*`);
+            const coreName = location.name.split(',')[0].trim(); 
+            const res = await fetch(`https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(coreName + ' city')}&gsrlimit=1&prop=pageimages&piprop=original&format=json&origin=*`);
             const data = await res.json();
-            const pages = data.query.pages;
-            const pageId = Object.keys(pages)[0];
-            if (pages[pageId].original) setDestinationImage(pages[pageId].original.source);
+            const pages = data.query?.pages;
+            if (pages) {
+                const pageId = Object.keys(pages)[0];
+                if (pages[pageId].original) setDestinationImage(pages[pageId].original.source);
+            }
         } catch(e) { console.warn("Could not load city image"); }
     };
 
-    // 2. Fetch Open-Meteo Forecast
     const fetchWeather = async () => {
         try {
-            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant&timezone=auto`;
+            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant&hourly=temperature_2m,weather_code,wind_speed_10m&timezone=auto`;
             const res = await fetch(weatherUrl);
             const data = await res.json();
             
             const forecast = data.daily.time.slice(0, 5).map((date, index) => ({
-                date: new Date(date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+                dateStr: date,
+                dateDisplay: new Date(date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
                 maxTemp: data.daily.temperature_2m_max[index],
                 minTemp: data.daily.temperature_2m_min[index],
                 weatherCode: data.daily.weather_code[index],
@@ -106,10 +118,11 @@ export default function ResultsScreen({ location, onGoBack }) {
                 sunset: new Date(data.daily.sunset[index]).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
                 rain: data.daily.precipitation_sum[index],
                 snow: data.daily.snowfall_sum[index],
-                wind: data.daily.wind_speed_10m_max[index],
-                windDir: data.daily.wind_direction_10m_dominant[index]
+                wind: data.daily.wind_speed_10m_max[index]
             }));
+            
             setWeatherData(forecast);
+            setHourlyWeather(data.hourly);
         } catch(e) { console.warn("Weather fetch failed", e); }
     };
 
@@ -117,16 +130,65 @@ export default function ResultsScreen({ location, onGoBack }) {
     fetchWeather();
   }, [location]);
 
-  // --- FETCH MAP POIs ---
+  const zipCode = location?.address?.postcode || '';
+  const locationDetails = zipCode ? `${location.name} (Zip: ${zipCode})` : location?.name;
+
+  const handleDayClick = (dayIndex, dateStr) => {
+      if (selectedWeatherDay === dayIndex) {
+          setSelectedWeatherDay(null);
+          return;
+      }
+      setSelectedWeatherDay(dayIndex);
+  };
+
+  const renderHourlyForecast = () => {
+      if (selectedWeatherDay === null || !hourlyWeather) return null;
+      
+      const targetDate = weatherData[selectedWeatherDay].dateStr;
+      const startIndex = hourlyWeather.time.findIndex(t => t.startsWith(targetDate));
+      if (startIndex === -1) return null;
+
+      let actualStartIndex = startIndex;
+      if (selectedWeatherDay === 0) {
+          const currentHourStr = new Date().toISOString().slice(0, 13) + ":00"; 
+          const todayNowIndex = hourlyWeather.time.findIndex(t => t === currentHourStr);
+          if (todayNowIndex !== -1) actualStartIndex = todayNowIndex;
+      } else {
+          actualStartIndex = startIndex + 8; 
+      }
+
+      const hours = [];
+      for (let i = actualStartIndex; i < actualStartIndex + 10; i++) {
+          if (i >= hourlyWeather.time.length) break;
+          const timeLabel = new Date(hourlyWeather.time[i]).toLocaleTimeString([], {hour: 'numeric', minute:'2-digit'});
+          const wInfo = getWeatherInfo(hourlyWeather.weather_code[i]);
+          hours.push(
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '60px', padding: '10px', backgroundColor: '#fff', borderRadius: '8px', border: '1px solid #eee' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#666' }}>{timeLabel}</span>
+                  <span style={{ fontSize: '18px', margin: '5px 0' }} title={wInfo.text}>{wInfo.icon}</span>
+                  <span style={{ fontSize: '12px', fontWeight: 'bold' }}>{hourlyWeather.temperature_2m[i]}°C</span>
+              </div>
+          );
+      }
+
+      return (
+          <div style={{ marginTop: '10px', padding: '15px', backgroundColor: '#e9ecef', borderRadius: '8px', display: 'flex', gap: '10px', overflowX: 'auto', boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.05)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', paddingRight: '15px', borderRight: '2px solid #ccc', color: '#555', fontWeight: 'bold', fontSize: '12px', whiteSpace: 'nowrap' }}>
+                  10-Hour<br/>Outlook
+              </div>
+              {hours}
+          </div>
+      );
+  };
+
   useEffect(() => {
     let isMounted = true;
-    
     const fetchPOIs = async () => {
       setApiError(null);
       setPlaces([]); 
       
       if (!location || isNaN(parseFloat(location.lat)) || isNaN(parseFloat(location.lon))) {
-          setApiError("Invalid coordinates. Please go back and select a location from the dropdown.");
+          setApiError("Invalid coordinates. Please go back and select a location.");
           return;
       }
       let validLat = parseFloat(location.lat);
@@ -166,12 +228,10 @@ export default function ResultsScreen({ location, onGoBack }) {
             if (!feature.properties.name) return; 
             const props = feature.properties;
             const id = props.place_id || `temp_${index}`;
-            
             if (uniqueIds.has(id)) return; 
             uniqueIds.add(id);
             
             const uiDesign = categorizePlace(props.categories);
-            
             processedPlaces.push({
               id: id,
               pLat: props.lat,
@@ -179,7 +239,6 @@ export default function ResultsScreen({ location, onGoBack }) {
               distance: props.distance / 1000,
               rating: null,
               reviews: null,
-              // Default image fallback
               photoUrl: `https://picsum.photos/seed/${id}/400/200`,
               group: uiDesign.group,
               icon: uiDesign.icon,
@@ -195,7 +254,7 @@ export default function ResultsScreen({ location, onGoBack }) {
         const finalPlaces = processedPlaces.filter(p => p.group !== 'Other');
         if (isMounted) {
             setPlaces(finalPlaces); 
-            if (finalPlaces.length === 0) setApiError("No places found in this area.");
+            if (finalPlaces.length === 0) setApiError("No places found in this area. Try increasing the radius.");
             else safeSetLocalStorage(cacheKey, JSON.stringify(finalPlaces));
         }
       } catch (error) {
@@ -226,8 +285,6 @@ export default function ResultsScreen({ location, onGoBack }) {
 
       if (response.ok) {
         const realData = await response.json();
-        
-        // THE MAGIC TRICK: Build the secure proxy image URL
         let finalImageUrl = null;
         if (realData.scraped_photo_ref) {
             finalImageUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${realData.scraped_photo_ref}`;
@@ -240,7 +297,6 @@ export default function ResultsScreen({ location, onGoBack }) {
                     ...p, 
                     rating: realData.error ? "Error" : realData.scraped_rating, 
                     reviews: realData.scraped_reviews, 
-                    // Use real image if we got it, else keep old placeholder
                     photoUrl: finalImageUrl || p.photoUrl, 
                     description: realData.error ? realData.error : (realData.scraped_description || p.description), 
                     source: realData.error ? null : realData.source,
@@ -403,13 +459,11 @@ export default function ResultsScreen({ location, onGoBack }) {
     <div style={containerStyle}>
       {apiError && ( <div style={{ backgroundColor: '#fff3cd', color: '#856404', padding: '12px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ffeeba', textAlign: 'center', fontWeight: 'bold', fontSize: '14px' }}> ⚠️ {apiError} </div> )}
       
-      {/* BEAUTIFUL HEADER WITH WIKIPEDIA IMAGE & WEATHER */}
       <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '20px', borderBottom: '2px solid #eee', paddingBottom: '15px', backgroundColor: 'white', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }}>
         
-        {/* Top Cover Photo Strip */}
-        <div style={{ width: '100%', height: isFullScreen ? '150px' : '100px', backgroundColor: '#e9ecef', backgroundImage: `url(${destinationImage})`, backgroundSize: 'cover', backgroundPosition: 'center', position: 'relative' }}>
+        <div style={{ width: '100%', height: isFullScreen ? '150px' : '120px', backgroundColor: '#e9ecef', backgroundImage: `url(${destinationImage})`, backgroundSize: 'cover', backgroundPosition: 'center', position: 'relative' }}>
             <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', padding: '20px' }}>
-                <h2 style={{ margin: 0, color: 'white', fontSize: isFullScreen ? '32px' : '24px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>Exploring: {location?.name || 'Unknown Location'}</h2>
+                <h2 style={{ margin: 0, color: 'white', fontSize: isFullScreen ? '32px' : '24px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>{locationDetails}</h2>
                 <div style={{ display: 'flex', gap: '10px' }}> 
                     <button onClick={() => setIsFullScreen(!isFullScreen)} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}> {isFullScreen ? '🗗 Exit Full Screen' : '⛶ Full Screen'} </button> 
                     <button onClick={onGoBack} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}> ← Back to Search </button> 
@@ -417,35 +471,44 @@ export default function ResultsScreen({ location, onGoBack }) {
             </div>
         </div>
 
-        {/* 5-Day Weather Forecast Strip */}
         {weatherData && (
-            <div style={{ padding: '15px 20px', display: 'flex', gap: '15px', overflowX: 'auto', backgroundColor: '#fff' }}>
-                <div style={{ display: 'flex', alignItems: 'center', paddingRight: '15px', borderRight: '2px solid #eee', color: '#555', fontWeight: 'bold' }}>
-                    5-Day<br/>Forecast
+            <div style={{ padding: '15px 20px', display: 'flex', flexDirection: 'column', backgroundColor: '#fff' }}>
+                
+                <div style={{ display: 'flex', gap: '15px', overflowX: 'auto', paddingBottom: '10px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', paddingRight: '15px', borderRight: '2px solid #eee', color: '#555', fontWeight: 'bold' }}>
+                        <span>5-Day</span><span>Forecast</span>
+                    </div>
+                    {weatherData.map((day, i) => {
+                        const info = getWeatherInfo(day.weatherCode);
+                        const isSelected = selectedWeatherDay === i;
+                        return (
+                            <div key={i} onClick={() => handleDayClick(i, day.dateStr)} style={{ minWidth: '160px', padding: '10px', backgroundColor: isSelected ? '#e7f5ff' : '#f8f9fa', border: isSelected ? '1px solid #339af0' : '1px solid transparent', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '5px', cursor: 'pointer', transition: 'all 0.2s' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>
+                                    <span>{day.dateDisplay}</span>
+                                    <span title={info.text}>{info.icon}</span>
+                                </div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                    <span style={{ color: '#d9480f' }}>H: {day.maxTemp}°C</span>
+                                    <span style={{ color: '#1c7ed6' }}>L: {day.minTemp}°C</span>
+                                </div>
+                                <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
+                                    <span>🌅 {day.sunrise}</span>
+                                    <span>🌇 {day.sunset}</span>
+                                </div>
+                                <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
+                                    <span title="Wind Speed">💨 {day.wind} km/h</span>
+                                    {day.snow > 0 ? <span title="Snowfall">❄️ {day.snow} mm</span> : <span title="Rainfall">💧 {day.rain} mm</span>}
+                                </div>
+                            </div>
+                        );
+                    })}
                 </div>
-                {weatherData.map((day, i) => {
-                    const info = getWeatherInfo(day.weatherCode);
-                    return (
-                        <div key={i} style={{ minWidth: '160px', padding: '10px', backgroundColor: '#f1f3f5', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>
-                                <span>{day.date}</span>
-                                <span title={info.text}>{info.icon}</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                <span style={{ color: '#d9480f' }}>H: {day.maxTemp}°C</span>
-                                <span style={{ color: '#1c7ed6' }}>L: {day.minTemp}°C</span>
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
-                                <span>🌅 {day.sunrise}</span>
-                                <span>🌇 {day.sunset}</span>
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
-                                <span title="Wind Speed">💨 {day.wind} km/h</span>
-                                {day.snow > 0 ? <span title="Snowfall">❄️ {day.snow} mm</span> : <span title="Rainfall">💧 {day.rain} mm</span>}
-                            </div>
-                        </div>
-                    );
-                })}
+                
+                {renderHourlyForecast()}
+                
+                <div style={{ marginTop: '10px', fontSize: '11px', color: '#2b8a3e', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    ✅ No active severe weather warnings for this location.
+                </div>
             </div>
         )}
       </div>
@@ -456,7 +519,7 @@ export default function ResultsScreen({ location, onGoBack }) {
         <div style={{ width: '250px', flexShrink: 0, paddingRight: '20px', borderRight: '2px solid #eee', overflowY: 'auto' }}>
           <h3 style={{ marginTop: 0 }}>Filters</h3>
           <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Search Results:</label> <input type="text" placeholder="e.g. Pizza, Museum..." value={localSearchQuery} onChange={(e) => setLocalSearchQuery(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '5px', border: '1px solid #ccc', boxSizing: 'border-box' }} /> </div>
-          <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Radius: {visualRadiusKm} km</label> <input type="range" min="0" max="11" step="1" value={visualRadiusIndex} onChange={(e) => setVisualRadiusIndex(Number(e.target.value))} onMouseUp={() => setAppliedRadiusIndex(visualRadiusIndex)} onTouchEnd={() => setAppliedRadiusIndex(visualRadiusIndex)} style={{ width: '100%', cursor: 'pointer' }} /> </div>
+          <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Radius: {visualRadiusKm} km</label> <input type="range" min="0" max="11" step="1" value={visualRadiusIndex} onChange={(e) => setVisualRadiusIndex(Number(e.target.value))} style={{ width: '100%', cursor: 'pointer' }} /> </div>
           <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Min. Rating: {minRating} ⭐</label> <input type="range" min="0" max="5" step="0.5" value={minRating} onChange={(e) => setMinRating(Number(e.target.value))} style={{ width: '100%' }} /> </div>
           <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Sort By:</label> <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '5px', border: '1px solid #ccc' }}> <option value="distance">Distance (Nearest First)</option> <option value="rating">User Rating (High to Low)</option> <option value="popularity">Popularity (Most Reviews)</option> </select> </div>
           <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '10px' }}>Categories:</label> {Object.keys(activeCategories).map(cat => ( <label key={cat} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', cursor: 'pointer' }}> <input type="checkbox" checked={activeCategories[cat]} onChange={() => setActiveCategories(prev => ({...prev, [cat]: !prev[cat]}))} /> {cat} </label> ))} </div>

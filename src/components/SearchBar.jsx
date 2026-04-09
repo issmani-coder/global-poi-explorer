@@ -1,97 +1,120 @@
 import { useState, useEffect } from 'react';
 
-export default function SearchBar({ onSearch }) {
-  const [query, setQuery] = useState('');
-  const [suggestions, setSuggestions] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
+// Securely pulling the key from your .env file
+const LOCATIONIQ_KEY = import.meta.env.VITE_LOCATIONIQ_KEY;
 
-  // Your LocationIQ API Key
-  const LOCATION_IQ_KEY = 'pk.7d34518cf1d5daea0e449b5aaa174cd2';
-
-  useEffect(() => {
-    // Only search if the user has typed at least 3 characters
-    if (query.length < 3) {
-      setSuggestions([]);
-      return;
-    }
+export default function SearchBar({ onLocationSelect }) {
+    const [query, setQuery] = useState('');
+    const [suggestions, setSuggestions] = useState([]);
+    const [recentSearches, setRecentSearches] = useState([]);
     
-    // Debounce: Waits 500ms after the user stops typing before calling the API
-    // This prevents you from burning through your 5,000 free requests too quickly!
-    const delayDebounceFn = setTimeout(async () => {
-      setIsSearching(true);
-      try {
-        const response = await fetch(`https://us1.locationiq.com/v1/autocomplete?key=${LOCATION_IQ_KEY}&q=${encodeURIComponent(query)}&limit=5&format=json`);
-        
-        if (response.ok) {
-          const data = await response.json();
-          // LocationIQ sometimes returns an error object inside a 200 OK response if it finds nothing
-          // This safely ensures we only set an array of suggestions
-          setSuggestions(Array.isArray(data) ? data : []); 
+    const bgImage = 'https://images.unsplash.com/photo-1524661135-423995f22d0b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80';
+
+    useEffect(() => {
+        const history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
+        setRecentSearches(history);
+    }, []);
+
+    useEffect(() => {
+        if (!query || query.length < 3) {
+            setSuggestions([]);
+            return;
         }
-      } catch (error) {
-        console.error("Autocomplete error:", error);
-      } finally {
-        setIsSearching(false);
-      }
-    }, 500); 
 
-    // Cleanup function to cancel the previous timer if the user keeps typing
-    return () => clearTimeout(delayDebounceFn);
-  }, [query]);
+        const delayTimer = setTimeout(async () => {
+            try {
+                const response = await fetch(`https://api.locationiq.com/v1/autocomplete?key=${LOCATIONIQ_KEY}&q=${encodeURIComponent(query)}&limit=5`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (!data.error) {
+                        setSuggestions(data);
+                    }
+                }
+            } catch (error) {
+                console.error("LocationIQ Fetch Error:", error);
+            }
+        }, 500);
 
-  const handleSelect = (place) => {
-    // 1. Clear the dropdown
-    setSuggestions([]);
-    
-    // 2. Update the input box to show what they clicked
-    const cleanName = place.display_place || place.display_name.split(',')[0];
-    setQuery(cleanName);
-    
-    // 3. Fire the data back up to App.js so it can launch the ResultsScreen
-    onSearch({
-      lat: parseFloat(place.lat),
-      lon: parseFloat(place.lon),
-      name: cleanName 
-    });
-  };
+        return () => clearTimeout(delayTimer);
+    }, [query]);
 
-  return (
-    <div style={{ maxWidth: '600px', margin: '100px auto', padding: '20px', fontFamily: 'sans-serif', textAlign: 'center' }}>
-      <h1>🌍 Global POI Explorer</h1>
-      <p>Search any city, zip code, or address in the world.</p>
-      
-      <div style={{ position: 'relative', textAlign: 'left' }}>
-        <input 
-          type="text" 
-          value={query} 
-          onChange={(e) => setQuery(e.target.value)} 
-          placeholder="e.g. Las Vegas, NV or 89109..." 
-          style={{ width: '100%', padding: '15px', fontSize: '18px', borderRadius: '8px', border: '2px solid #ddd', boxSizing: 'border-box' }}
-        />
+    const handleSelect = (locationObj) => {
+        const formattedLocation = {
+            lat: locationObj.lat,
+            lon: locationObj.lon,
+            name: locationObj.name || locationObj.display_name.split(',')[0], 
+            address: locationObj.address || {}
+        };
+
+        const updatedHistory = [formattedLocation, ...recentSearches.filter(s => s.name !== formattedLocation.name)].slice(0, 10);
+        setRecentSearches(updatedHistory);
+        localStorage.setItem('searchHistory', JSON.stringify(updatedHistory));
         
-        {isSearching && <div style={{ position: 'absolute', right: '15px', top: '18px', color: '#888' }}>Searching...</div>}
-        
-        {suggestions.length > 0 && (
-          <ul style={{ position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'white', border: '1px solid #ddd', borderRadius: '0 0 8px 8px', listStyle: 'none', margin: 0, padding: 0, zIndex: 1000, boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-            {suggestions.map((place) => (
-              <li 
-                key={place.place_id} 
-                onClick={() => handleSelect(place)}
-                style={{ padding: '12px 15px', cursor: 'pointer', borderBottom: '1px solid #eee' }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f8f9fa'}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-              >
-                <div style={{ fontWeight: 'bold', color: '#333' }}>
-                    {place.display_place || place.display_name.split(',')[0]}
+        onLocationSelect(formattedLocation);
+    };
+
+    return (
+        <div style={{ 
+            height: '100vh', width: '100vw', display: 'flex', justifyContent: 'center', alignItems: 'center', 
+            backgroundImage: `url(${bgImage})`, backgroundSize: 'cover', backgroundPosition: 'center',
+            position: 'relative', fontFamily: 'sans-serif'
+        }}>
+            <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(30, 40, 50, 0.6)' }}></div>
+            
+            <div style={{ position: 'relative', zIndex: 10, backgroundColor: 'rgba(255,255,255,0.98)', padding: '40px', borderRadius: '15px', width: '90%', maxWidth: '550px', boxShadow: '0 20px 40px rgba(0,0,0,0.3)' }}>
+                <h1 style={{ textAlign: 'center', margin: '0 0 10px 0', fontSize: '28px', color: '#222' }}>🌍 Global POI Explorer</h1>
+                <p style={{ textAlign: 'center', color: '#666', margin: '0 0 30px 0', fontSize: '15px' }}>Search any city, zip code, or address in the world.</p>
+                
+                <div style={{ position: 'relative' }}>
+                    <input 
+                        type="text" 
+                        placeholder="e.g. Las Vegas, NV or 89109..." 
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        style={{ width: '100%', padding: '15px', fontSize: '16px', borderRadius: '8px', border: '2px solid #ddd', boxSizing: 'border-box', outline: 'none', transition: 'border-color 0.2s' }}
+                        onFocus={(e) => e.target.style.borderColor = '#007bff'}
+                        onBlur={(e) => e.target.style.borderColor = '#ddd'}
+                    />
+
+                    {suggestions.length > 0 && (
+                        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'white', border: '1px solid #ddd', borderTop: 'none', borderRadius: '0 0 8px 8px', overflow: 'hidden', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', zIndex: 20 }}>
+                            {suggestions.map((item, index) => (
+                                <div 
+                                    key={index}
+                                    onClick={() => handleSelect(item)}
+                                    style={{ padding: '12px 15px', cursor: 'pointer', borderBottom: index === suggestions.length - 1 ? 'none' : '1px solid #eee', fontSize: '14px', color: '#333' }}
+                                    onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#f8f9fa'}
+                                    onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'white'}
+                                >
+                                    <strong>{item.display_name.split(',')[0]}</strong>
+                                    <span style={{ color: '#888', fontSize: '12px', marginLeft: '8px' }}>
+                                        {item.display_name.substring(item.display_name.indexOf(',') + 1)}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
-                <div style={{ fontSize: '12px', color: '#777' }}>
-                    {place.display_name}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
+
+                {recentSearches.length > 0 && (
+                    <div style={{ marginTop: '30px', borderTop: '1px solid #eee', paddingTop: '20px' }}>
+                        <h4 style={{ margin: '0 0 12px 0', fontSize: '12px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px' }}>Recent Searches</h4>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                            {recentSearches.map((loc, i) => (
+                                <button 
+                                    key={i} 
+                                    onClick={() => handleSelect(loc)}
+                                    style={{ padding: '8px 14px', fontSize: '13px', backgroundColor: '#f1f3f5', color: '#495057', border: '1px solid #dee2e6', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '5px' }}
+                                    onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#e9ecef'; e.currentTarget.style.borderColor = '#ced4da'; }}
+                                    onMouseOut={(e) => { e.currentTarget.style.backgroundColor = '#f1f3f5'; e.currentTarget.style.borderColor = '#dee2e6'; }}
+                                >
+                                    <span style={{ fontSize: '14px' }}>🕒</span> {loc.name}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
 }
