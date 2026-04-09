@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { supabase } from '../supabaseClient';
 
 const DISTANCE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20];
 const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_KEY;
 const PEXELS_KEY = import.meta.env.VITE_PEXELS_API_KEY;
-const WEATHERBIT_KEY = import.meta.env.VITE_WEATHERBIT_KEY; // NEW: Live Alerts Key
+const WEATHERBIT_KEY = import.meta.env.VITE_WEATHERBIT_KEY;
 const PYTHON_BACKEND_URL = 'https://global-poi-explorer.onrender.com';
 
 const safeSetLocalStorage = (key, value) => {
@@ -67,9 +68,9 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v26`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v27`;
 
-  // PEXELS BACKGROUND FETCHER
+  // PEXELS ROTATING BACKGROUND
   useEffect(() => {
     if (PEXELS_KEY && location?.name) {
         const coreName = location.name.split(',')[0].trim() + " city";
@@ -87,12 +88,11 @@ export default function ResultsScreen({ location, onGoBack }) {
 
   useEffect(() => {
     if (bgImages.length <= 1) return;
-    const interval = setInterval(() => {
-        setCurrentBgIndex((prev) => (prev + 1) % bgImages.length);
-    }, 5000);
+    const interval = setInterval(() => setCurrentBgIndex((prev) => (prev + 1) % bgImages.length), 5000);
     return () => clearInterval(interval);
   }, [bgImages]);
 
+  // Debounced Slider
   useEffect(() => {
     const timer = setTimeout(() => {
         if (visualRadiusIndex !== appliedRadiusIndex) setAppliedRadiusIndex(visualRadiusIndex);
@@ -117,10 +117,10 @@ export default function ResultsScreen({ location, onGoBack }) {
     return { name: sourceStr, icon: '🌐', color: '#666' };
   };
 
+  // DESTINATION PHOTO, WEATHER, & ALERTS
   useEffect(() => {
     if (!location?.lat || !location?.lon) return;
 
-    // Fetch Destination Image (Wikipedia)
     const fetchCityImage = async () => {
         try {
             const coreName = location.name.split(',')[0].trim(); 
@@ -134,7 +134,6 @@ export default function ResultsScreen({ location, onGoBack }) {
         } catch(e) {}
     };
 
-    // Fetch Open-Meteo Data (Daily & Hourly)
     const fetchWeather = async () => {
         try {
             const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant,uv_index_max,sunshine_duration,daylight_duration,precipitation_hours&hourly=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,visibility,uv_index&timezone=auto`;
@@ -164,7 +163,6 @@ export default function ResultsScreen({ location, onGoBack }) {
         } catch(e) { console.warn("Weather fetch failed", e); }
     };
 
-    // NEW: Fetch Real Live Alerts from Weatherbit
     const fetchLiveAlerts = async () => {
         if (!WEATHERBIT_KEY) return;
         try {
@@ -173,7 +171,6 @@ export default function ResultsScreen({ location, onGoBack }) {
             if (res.ok) {
                 const data = await res.json();
                 if (data.alerts && data.alerts.length > 0) {
-                    // Extract just the titles of the alerts and remove duplicates
                     const alertTitles = [...new Set(data.alerts.map(alert => alert.title))];
                     setWeatherWarnings({ active: true, messages: alertTitles });
                 } else {
@@ -248,6 +245,7 @@ export default function ResultsScreen({ location, onGoBack }) {
       );
   };
 
+  // --- FETCH MAP POIs & SUPABASE CHECK ---
   useEffect(() => {
     let isMounted = true;
     const fetchPOIs = async () => {
@@ -305,6 +303,27 @@ export default function ResultsScreen({ location, onGoBack }) {
         });
           
         const finalPlaces = processedPlaces.filter(p => p.group !== 'Other');
+
+        if (finalPlaces.length > 0) {
+            // ⚡ THE SUPABASE BULK CHECK ⚡
+            const placeIds = finalPlaces.map(p => p.id);
+            const { data: dbCache } = await supabase.from('poi_data').select('*').in('place_id', placeIds);
+
+            if (dbCache && dbCache.length > 0) {
+                finalPlaces.forEach(place => {
+                    const cachedMatch = dbCache.find(db => db.place_id === place.id);
+                    if (cachedMatch) {
+                        place.rating = cachedMatch.rating;
+                        place.reviews = cachedMatch.reviews;
+                        if (cachedMatch.photo_ref) place.photoUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${cachedMatch.photo_ref}`;
+                        if (cachedMatch.description) place.description = cachedMatch.description;
+                        place.source = cachedMatch.source;
+                        place.needsRealData = false; // Prevents re-fetching
+                    }
+                });
+            }
+        }
+
         if (isMounted) {
             setPlaces(finalPlaces); 
             if (finalPlaces.length === 0) setApiError("No places found in this area.");
@@ -338,6 +357,21 @@ export default function ResultsScreen({ location, onGoBack }) {
         const realData = await response.json();
         let finalImageUrl = null;
         if (realData.scraped_photo_ref) finalImageUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${realData.scraped_photo_ref}`;
+
+        // ⚡ SAVE TO SUPABASE FOR THE FUTURE ⚡
+        if (!realData.error) {
+            await supabase.from('poi_data').upsert({
+                place_id: placeId,
+                name: placeName,
+                category: category,
+                rating: realData.scraped_rating,
+                reviews: realData.scraped_reviews,
+                photo_ref: realData.scraped_photo_ref,
+                description: realData.scraped_description,
+                source: realData.source,
+                updated_at: new Date()
+            });
+        }
 
         setPlaces(prevPlaces => {
             const newPlaces = prevPlaces.map(p => {
@@ -560,7 +594,7 @@ export default function ResultsScreen({ location, onGoBack }) {
                     
                     {renderHourlyForecast()}
                     
-                    {/* WEATHERBIT ALERTS UI */}
+                    {/* WEATHERBIT LIVE ALERTS UI */}
                     <div style={{ marginTop: '10px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
                         {weatherWarnings.active ? (
                             weatherWarnings.messages.map((msg, i) => (

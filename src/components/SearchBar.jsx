@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { supabase } from '../supabaseClient';
 
 const LOCATIONIQ_KEY = import.meta.env.VITE_LOCATIONIQ_KEY;
 const PEXELS_KEY = import.meta.env.VITE_PEXELS_API_KEY;
@@ -9,20 +10,33 @@ export default function SearchBar({ onLocationSelect }) {
     const [recentSearches, setRecentSearches] = useState([]);
     const [bgImage, setBgImage] = useState('');
 
+    // 1. Fetch Global History & Pexels Background on Boot
     useEffect(() => {
-        const history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
-        setRecentSearches(history);
+        const fetchHistory = async () => {
+            const { data, error } = await supabase
+                .from('search_history')
+                .select('*')
+                .order('created_at', { ascending: false })
+                .limit(15);
+            
+            if (data && !error) {
+                const uniqueHistory = data.filter((v, i, a) => a.findIndex(t => (t.name === v.name)) === i).slice(0, 10);
+                setRecentSearches(uniqueHistory);
+            } else {
+                // Fallback to local storage if Supabase fails
+                setRecentSearches(JSON.parse(localStorage.getItem('searchHistory') || '[]'));
+            }
+        };
+
+        fetchHistory();
         
-        // Pexels API Fetch
         if (PEXELS_KEY) {
-            // We search for a general travel landscape for the home screen
             fetch(`https://api.pexels.com/v1/search?query=travel+landscape&per_page=15`, {
                 headers: { Authorization: PEXELS_KEY }
             })
             .then(res => res.json())
             .then(data => {
                 if (data.photos && data.photos.length > 0) {
-                    // Pick a random photo from the 15 results
                     const randomPhoto = data.photos[Math.floor(Math.random() * data.photos.length)];
                     setBgImage(randomPhoto.src.large2x || randomPhoto.src.large);
                 }
@@ -33,6 +47,7 @@ export default function SearchBar({ onLocationSelect }) {
         }
     }, []);
 
+    // 2. Debounced LocationIQ Autocomplete
     useEffect(() => {
         if (!query || query.length < 3) {
             setSuggestions([]);
@@ -52,17 +67,27 @@ export default function SearchBar({ onLocationSelect }) {
         return () => clearTimeout(delayTimer);
     }, [query]);
 
-    const handleSelect = (locationObj) => {
+    // 3. Handle User Selection & Push to Supabase
+    const handleSelect = async (locationObj) => {
         const formattedLocation = {
             lat: locationObj.lat,
             lon: locationObj.lon,
-            name: locationObj.name || locationObj.display_name.split(',')[0], 
+            name: locationObj.name || locationObj.display_name?.split(',')[0] || locationObj.name, 
             address: locationObj.address || {}
         };
 
+        // Optimistically update UI
         const updatedHistory = [formattedLocation, ...recentSearches.filter(s => s.name !== formattedLocation.name)].slice(0, 10);
         setRecentSearches(updatedHistory);
         localStorage.setItem('searchHistory', JSON.stringify(updatedHistory));
+        
+        // Push to Supabase quietly in the background
+        await supabase.from('search_history').insert([{ 
+            name: formattedLocation.name, 
+            lat: formattedLocation.lat, 
+            lon: formattedLocation.lon 
+        }]);
+
         onLocationSelect(formattedLocation);
     };
 

@@ -1,9 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Your actual Supabase Project URL
-const supabaseUrl = 'https://twrltsoodzvapiuqwrgg.supabase.co';
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-// Paste the fully copied Publishable key here
-const supabaseKey = 'sb_publishable_eaWGQ8FpJMH_QEnDQsDT2w_GfYYuISH'; 
-
-export const supabase = createClient(supabaseUrl, supabaseKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
