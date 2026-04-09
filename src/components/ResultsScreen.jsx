@@ -15,7 +15,6 @@ const safeSetLocalStorage = (key, value) => {
   }
 };
 
-// Helper to convert Degrees to Compass Directions
 const getWindDirection = (degree) => {
     if (degree === undefined || degree === null) return '';
     const val = Math.floor((degree / 22.5) + 0.5);
@@ -67,9 +66,9 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v23`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v24`;
 
-  // --- 1. ROTATING BACKGROUND FETCH ---
+  // --- 1. ROTATING BACKGROUND FETCH (PRE-LOADED LAYER FIX) ---
   useEffect(() => {
     if (UNSPLASH_KEY) {
         fetch(`https://api.unsplash.com/photos/random?count=10&query=travel,city,landscape&orientation=landscape&client_id=${UNSPLASH_KEY}`)
@@ -88,7 +87,6 @@ export default function ResultsScreen({ location, onGoBack }) {
     return () => clearInterval(interval);
   }, [bgImages]);
 
-  // Debounced Slider
   useEffect(() => {
     const timer = setTimeout(() => {
         if (visualRadiusIndex !== appliedRadiusIndex) setAppliedRadiusIndex(visualRadiusIndex);
@@ -132,7 +130,8 @@ export default function ResultsScreen({ location, onGoBack }) {
 
     const fetchWeather = async () => {
         try {
-            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant&hourly=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation&timezone=auto`;
+            // UPDATED API URL TO INCLUDE ALL REQUESTED PARAMETERS
+            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant,uv_index_max,sunshine_duration,daylight_duration,precipitation_hours&hourly=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,visibility,uv_index&timezone=auto`;
             const res = await fetch(weatherUrl);
             const data = await res.json();
             
@@ -146,8 +145,12 @@ export default function ResultsScreen({ location, onGoBack }) {
                 sunset: new Date(data.daily.sunset[index]).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
                 rain: data.daily.precipitation_sum[index],
                 snow: data.daily.snowfall_sum[index],
+                precipHours: data.daily.precipitation_hours[index],
                 wind: data.daily.wind_speed_10m_max[index],
-                windDir: getWindDirection(data.daily.wind_direction_10m_dominant[index])
+                windDir: getWindDirection(data.daily.wind_direction_10m_dominant[index]),
+                uv: data.daily.uv_index_max[index],
+                sunshine: (data.daily.sunshine_duration[index] / 3600).toFixed(1), // Convert seconds to hours
+                daylight: (data.daily.daylight_duration[index] / 3600).toFixed(1) // Convert seconds to hours
             }));
             
             setWeatherData(forecast);
@@ -187,14 +190,18 @@ export default function ResultsScreen({ location, onGoBack }) {
           if (i >= hourlyWeather.time.length) break;
           const timeLabel = new Date(hourlyWeather.time[i]).toLocaleTimeString([], {hour: 'numeric', minute:'2-digit'});
           const wInfo = getWeatherInfo(hourlyWeather.weather_code[i]);
+          
           hours.push(
-              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '75px', padding: '10px', backgroundColor: '#fff', borderRadius: '8px', border: '1px solid #eee' }}>
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '95px', padding: '10px', backgroundColor: '#fff', borderRadius: '8px', border: '1px solid #eee' }}>
                   <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#666' }}>{timeLabel}</span>
                   <span style={{ fontSize: '18px', margin: '5px 0' }} title={wInfo.text}>{wInfo.icon}</span>
-                  <span style={{ fontSize: '12px', fontWeight: 'bold' }}>{hourlyWeather.temperature_2m[i]}°C</span>
-                  <div style={{ fontSize: '10px', color: '#888', marginTop: '4px', textAlign: 'center' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 'bold' }}>{hourlyWeather.temperature_2m[i]}°C</span>
+                  <div style={{ fontSize: '10px', color: '#666', marginTop: '6px', textAlign: 'center', lineHeight: '1.4' }}>
                       💨 {hourlyWeather.wind_speed_10m[i]}km/h {getWindDirection(hourlyWeather.wind_direction_10m[i])}
-                      <br/>💧 {hourlyWeather.precipitation[i]}mm
+                      <br/>💧 {hourlyWeather.precipitation[i]}mm precip
+                      <br/>☁️ {hourlyWeather.cloud_cover[i]}% cloud
+                      <br/>👁️ {(hourlyWeather.visibility[i] / 1000).toFixed(1)}km vis
+                      <br/>☀️ {hourlyWeather.uv_index[i]} UV
                   </div>
               </div>
           );
@@ -456,23 +463,25 @@ export default function ResultsScreen({ location, onGoBack }) {
   };
 
   // --- 4. THE LAYOUT FIX: THE "FRAME" ---
-  // The wrapper is permanently fixed to the viewport to hold the background.
-  const activeBg = bgImages.length > 0 ? bgImages[currentBgIndex] : 'https://images.unsplash.com/photo-1524661135-423995f22d0b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80';
+  const fallbackBg = 'https://images.unsplash.com/photo-1524661135-423995f22d0b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80';
   
   const wrapperStyle = {
       position: 'fixed', inset: 0, display: 'flex', justifyContent: 'center', alignItems: 'center',
-      backgroundImage: `url(${activeBg})`, backgroundSize: 'cover', backgroundPosition: 'center',
-      transition: 'background-image 1s ease-in-out', zIndex: 1, margin: 0, padding: 0
+      zIndex: 1, margin: 0, padding: 0, overflow: 'hidden'
   };
 
-  // The container limits itself strictly to 95vh height when windowed, preventing cutoff.
   const containerStyle = isFullScreen 
     ? { position: 'fixed', inset: 0, zIndex: 1000, backgroundColor: 'rgba(248, 249, 250, 0.97)', padding: '20px', width: '100vw', height: '100vh', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' } 
     : { backgroundColor: 'rgba(248, 249, 250, 0.97)', padding: '20px', borderRadius: '15px', boxShadow: '0 10px 40px rgba(0,0,0,0.5)', width: '95%', maxWidth: '1600px', height: '95vh', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', position: 'relative', zIndex: 10 };
 
   return (
     <div style={wrapperStyle}>
-      <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(30, 40, 50, 0.6)', zIndex: 0 }}></div>
+      {/* Pre-rendered Image Layers for Smooth Crossfading */}
+      {bgImages.length > 0 ? bgImages.map((img, i) => (
+          <div key={img} style={{ position: 'absolute', inset: 0, backgroundImage: `url(${img})`, backgroundSize: 'cover', backgroundPosition: 'center', opacity: currentBgIndex === i ? 1 : 0, transition: 'opacity 1.5s ease-in-out', zIndex: -2 }} />
+      )) : ( <div style={{ position: 'absolute', inset: 0, backgroundImage: `url(${fallbackBg})`, backgroundSize: 'cover', backgroundPosition: 'center', zIndex: -2 }} /> )}
+
+      <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(30, 40, 50, 0.6)', zIndex: -1 }}></div>
       
       <div style={containerStyle}>
         {apiError && ( <div style={{ backgroundColor: '#fff3cd', color: '#856404', padding: '12px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ffeeba', textAlign: 'center', fontWeight: 'bold', fontSize: '14px' }}> ⚠️ {apiError} </div> )}
@@ -499,7 +508,7 @@ export default function ResultsScreen({ location, onGoBack }) {
                             const info = getWeatherInfo(day.weatherCode);
                             const isSelected = selectedWeatherDay === i;
                             return (
-                                <div key={i} onClick={() => handleDayClick(i)} style={{ minWidth: '160px', padding: '10px', backgroundColor: isSelected ? '#e7f5ff' : '#f8f9fa', border: isSelected ? '1px solid #339af0' : '1px solid transparent', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '5px', cursor: 'pointer', transition: 'all 0.2s' }}>
+                                <div key={i} onClick={() => handleDayClick(i)} style={{ minWidth: '180px', padding: '10px', backgroundColor: isSelected ? '#e7f5ff' : '#f8f9fa', border: isSelected ? '1px solid #339af0' : '1px solid transparent', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '6px', cursor: 'pointer', transition: 'all 0.2s' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>
                                         <span>{day.dateDisplay}</span>
                                         <span title={info.text}>{info.icon}</span>
@@ -509,12 +518,12 @@ export default function ResultsScreen({ location, onGoBack }) {
                                         <span style={{ color: '#1c7ed6' }}>L: {day.minTemp}°C</span>
                                     </div>
                                     <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
-                                        <span>🌅 {day.sunrise}</span>
-                                        <span>🌇 {day.sunset}</span>
+                                        <span title="Total Precip">💧 {day.rain} mm ({day.precipHours}h)</span>
+                                        <span title="Wind">💨 {day.wind} km/h {day.windDir}</span>
                                     </div>
                                     <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
-                                        <span title="Wind">💨 {day.wind} km/h {day.windDir}</span>
-                                        {day.snow > 0 ? <span title="Snowfall">❄️ {day.snow} mm</span> : <span title="Rainfall">💧 {day.rain} mm</span>}
+                                        <span title="Sun/Daylight">☀️ Sun: {day.sunshine}h / {day.daylight}h</span>
+                                        <span title="UV Index">UV: {day.uv}</span>
                                     </div>
                                 </div>
                             );
@@ -537,7 +546,7 @@ export default function ResultsScreen({ location, onGoBack }) {
             <div style={{ marginBottom: '25px' }}> 
                 <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Radius: {visualRadiusKm} km</label> 
                 <input type="range" min="0" max="11" step="1" value={visualRadiusIndex} onChange={(e) => setVisualRadiusIndex(Number(e.target.value))} style={{ width: '100%', cursor: 'pointer' }} /> 
-                {places.length === 500 && ( <div style={{ fontSize: '11px', color: '#e03131', marginTop: '5px', fontWeight: 'bold', textAlign: 'center' }}> ⚠️ API Limit: Max 500 places reached. </div> )}
+                {places.length === 500 && ( <div style={{ fontSize: '11px', color: '#e03131', marginTop: '5px', fontWeight: 'bold', textAlign: 'center', backgroundColor: '#ffe3e3', padding: '5px', borderRadius: '4px' }}> ⚠️ API Limit: Max 500 places reached. </div> )}
             </div>
             <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Min. Rating: {minRating} ⭐</label> <input type="range" min="0" max="5" step="0.5" value={minRating} onChange={(e) => setMinRating(Number(e.target.value))} style={{ width: '100%' }} /> </div>
             <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Sort By:</label> <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '5px', border: '1px solid #ccc' }}> <option value="distance">Distance (Nearest First)</option> <option value="rating">User Rating (High to Low)</option> <option value="popularity">Popularity (Most Reviews)</option> </select> </div>
