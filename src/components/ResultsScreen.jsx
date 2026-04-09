@@ -3,19 +3,30 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 const DISTANCE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20];
 const GEOAPIFY_KEY = 'b98c61769e0f409e96eeb554e64de281';
 
-// 👇 YOUR LIVE PYTHON BACKEND URL 👇
-// Make sure it does NOT have a trailing slash (/) at the end!
+// 👇 Make sure this is your LIVE Python URL 👇
 const PYTHON_BACKEND_URL = 'https://global-poi-explorer.onrender.com';
 
 const safeSetLocalStorage = (key, value) => {
   try { localStorage.setItem(key, value); } 
   catch (e) {
     if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
-      console.warn("Browser memory full! Wiping old cache...");
       localStorage.clear();
-      try { localStorage.setItem(key, value); } catch (e2) { console.error("Cache still full."); }
+      try { localStorage.setItem(key, value); } catch (e2) {}
     }
   }
+};
+
+// Helper to convert Open-Meteo codes to Icons and Text
+const getWeatherInfo = (code) => {
+    if (code === 0) return { icon: '☀️', text: 'Clear' };
+    if ([1, 2, 3].includes(code)) return { icon: '⛅', text: 'Cloudy' };
+    if ([45, 48].includes(code)) return { icon: '🌫️', text: 'Foggy' };
+    if ([51, 53, 55, 56, 57].includes(code)) return { icon: '🌧️', text: 'Drizzle' };
+    if ([61, 63, 65, 66, 67].includes(code)) return { icon: '☔', text: 'Rain' };
+    if ([71, 73, 75, 77, 85, 86].includes(code)) return { icon: '❄️', text: 'Snow' };
+    if ([80, 81, 82].includes(code)) return { icon: '🚿', text: 'Showers' };
+    if ([95, 96, 99].includes(code)) return { icon: '⛈️', text: 'Thunderstorm! ⚠️' };
+    return { icon: '🌤️', text: 'Unknown' };
 };
 
 export default function ResultsScreen({ location, onGoBack }) {
@@ -24,6 +35,10 @@ export default function ResultsScreen({ location, onGoBack }) {
   const [progress, setProgress] = useState(0);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [apiError, setApiError] = useState(null); 
+  
+  // New States for Enhancements
+  const [weatherData, setWeatherData] = useState(null);
+  const [destinationImage, setDestinationImage] = useState(null);
   
   const [localSearchQuery, setLocalSearchQuery] = useState('');
   const [activeScrapingIds, setActiveScrapingIds] = useState([]);
@@ -41,28 +56,68 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v20_geoapify`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v21`;
 
   const categorizePlace = (categoriesArray) => {
     if (!categoriesArray) return { group: 'Other', icon: '📍', label: 'Spot' };
-    
     if (categoriesArray.some(c => c.startsWith('accommodation'))) return { group: 'Hotels', icon: '🛏️', label: 'Hotel' };
     if (categoriesArray.some(c => c.startsWith('catering'))) return { group: 'Restaurants', icon: '🍽️', label: 'Dining' };
     if (categoriesArray.some(c => c.startsWith('commercial'))) return { group: 'Shopping', icon: '🛍️', label: 'Shop' };
     if (categoriesArray.some(c => c.includes('fuel'))) return { group: 'GasStations', icon: '⛽', label: 'Gas' };
     if (categoriesArray.some(c => c.startsWith('healthcare'))) return { group: 'Hospitals', icon: '🏥', label: 'Medical' };
     if (categoriesArray.some(c => c.startsWith('tourism') || c.startsWith('entertainment'))) return { group: 'Attractions', icon: '📸', label: 'Attraction' };
-    
     return { group: 'Other', icon: '📍', label: 'Spot' };
   };
 
   const getSourceBadge = (sourceStr) => {
     if (!sourceStr || sourceStr === "Not Found") return null;
     if (sourceStr === 'Google') return { name: 'Google', icon: '🔵', color: '#4285F4' };
-    if (sourceStr === 'Yelp') return { name: 'Yelp', icon: '🔴', color: '#d32323' };
     return { name: sourceStr, icon: '🌐', color: '#666' };
   };
 
+  // --- FETCH DESTINATION IMAGE & WEATHER ---
+  useEffect(() => {
+    if (!location?.lat || !location?.lon) return;
+
+    // 1. Fetch free Wikipedia Image for the city
+    const fetchCityImage = async () => {
+        try {
+            const res = await fetch(`https://en.wikipedia.org/w/api.php?action=query&prop=pageimages&format=json&piprop=original&titles=${encodeURIComponent(location.name.split(',')[0])}&origin=*`);
+            const data = await res.json();
+            const pages = data.query.pages;
+            const pageId = Object.keys(pages)[0];
+            if (pages[pageId].original) setDestinationImage(pages[pageId].original.source);
+        } catch(e) { console.warn("Could not load city image"); }
+    };
+
+    // 2. Fetch Open-Meteo Forecast
+    const fetchWeather = async () => {
+        try {
+            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant&timezone=auto`;
+            const res = await fetch(weatherUrl);
+            const data = await res.json();
+            
+            const forecast = data.daily.time.slice(0, 5).map((date, index) => ({
+                date: new Date(date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+                maxTemp: data.daily.temperature_2m_max[index],
+                minTemp: data.daily.temperature_2m_min[index],
+                weatherCode: data.daily.weather_code[index],
+                sunrise: new Date(data.daily.sunrise[index]).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+                sunset: new Date(data.daily.sunset[index]).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+                rain: data.daily.precipitation_sum[index],
+                snow: data.daily.snowfall_sum[index],
+                wind: data.daily.wind_speed_10m_max[index],
+                windDir: data.daily.wind_direction_10m_dominant[index]
+            }));
+            setWeatherData(forecast);
+        } catch(e) { console.warn("Weather fetch failed", e); }
+    };
+
+    fetchCityImage();
+    fetchWeather();
+  }, [location]);
+
+  // --- FETCH MAP POIs ---
   useEffect(() => {
     let isMounted = true;
     
@@ -71,17 +126,14 @@ export default function ResultsScreen({ location, onGoBack }) {
       setPlaces([]); 
       
       if (!location || isNaN(parseFloat(location.lat)) || isNaN(parseFloat(location.lon))) {
-          setApiError("Invalid coordinates from Search Bar. Please go back and select a location from the dropdown.");
+          setApiError("Invalid coordinates. Please go back and select a location from the dropdown.");
           return;
       }
-
       let validLat = parseFloat(location.lat);
       let validLon = parseFloat(location.lon);
 
       if (validLat < -90 || validLat > 90) {
-          const temp = validLat;
-          validLat = validLon;
-          validLon = temp;
+          const temp = validLat; validLat = validLon; validLon = temp;
       }
 
       try {
@@ -90,7 +142,7 @@ export default function ResultsScreen({ location, onGoBack }) {
           const parsed = JSON.parse(cachedData);
           if (parsed.length > 0 && isMounted) { setPlaces(parsed); return; }
         }
-      } catch (e) { console.warn("Cache read failed."); }
+      } catch (e) {}
       
       setIsLoading(true); setProgress(15);
       const progressInterval = setInterval(() => { if (isMounted) setProgress((prev) => (prev < 85 ? prev + 15 : prev)); }, 300);
@@ -98,18 +150,12 @@ export default function ResultsScreen({ location, onGoBack }) {
       try {
         const radiusMeters = currentRadiusKm * 1000;
         const targetCategories = 'accommodation,catering,commercial,healthcare,service,tourism,entertainment';
-        
         const url = `https://api.geoapify.com/v2/places?categories=${targetCategories}&filter=circle:${validLon},${validLat},${radiusMeters}&bias=proximity:${validLon},${validLat}&limit=500&apiKey=${GEOAPIFY_KEY}`;
 
         const response = await fetch(url);
-        
-        if (!response.ok) {
-            const errorDetails = await response.text(); 
-            throw new Error(`Geoapify blocked the request: ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`Geoapify blocked the request: ${response.status}`);
         
         const data = await response.json();
-
         clearInterval(progressInterval);
         if (isMounted) setProgress(100);
         
@@ -118,7 +164,6 @@ export default function ResultsScreen({ location, onGoBack }) {
         
         data.features.forEach((feature, index) => {
             if (!feature.properties.name) return; 
-            
             const props = feature.properties;
             const id = props.place_id || `temp_${index}`;
             
@@ -134,6 +179,7 @@ export default function ResultsScreen({ location, onGoBack }) {
               distance: props.distance / 1000,
               rating: null,
               reviews: null,
+              // Default image fallback
               photoUrl: `https://picsum.photos/seed/${id}/400/200`,
               group: uiDesign.group,
               icon: uiDesign.icon,
@@ -147,14 +193,10 @@ export default function ResultsScreen({ location, onGoBack }) {
         });
           
         const finalPlaces = processedPlaces.filter(p => p.group !== 'Other');
-          
         if (isMounted) {
             setPlaces(finalPlaces); 
-            if (finalPlaces.length === 0) {
-                setApiError("No places found in this area. Try increasing the radius.");
-            } else {
-                safeSetLocalStorage(cacheKey, JSON.stringify(finalPlaces));
-            }
+            if (finalPlaces.length === 0) setApiError("No places found in this area.");
+            else safeSetLocalStorage(cacheKey, JSON.stringify(finalPlaces));
         }
       } catch (error) {
         clearInterval(progressInterval); 
@@ -168,27 +210,29 @@ export default function ResultsScreen({ location, onGoBack }) {
   }, [location, appliedRadiusIndex]); 
 
   const saveToMemory = (updatedPlaces) => {
-      if (updatedPlaces.length > 0 && !apiError) {
-          safeSetLocalStorage(cacheKey, JSON.stringify(updatedPlaces));
-      }
+      if (updatedPlaces.length > 0 && !apiError) safeSetLocalStorage(cacheKey, JSON.stringify(updatedPlaces));
   };
 
   const fetchRealDataForPlace = async (placeId, placeName, category) => {
     setActiveScrapingIds(prev => [...prev, placeId]); 
-    
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 90000); 
 
     try {
-      // Pinging your live Python backend!
       const response = await fetch(`${PYTHON_BACKEND_URL}/get_details?name=${encodeURIComponent(placeName)}&location=${encodeURIComponent(location?.name || '')}&category=${encodeURIComponent(category)}`, {
           signal: controller.signal
       });
-      
       clearTimeout(timeoutId); 
 
       if (response.ok) {
         const realData = await response.json();
+        
+        // THE MAGIC TRICK: Build the secure proxy image URL
+        let finalImageUrl = null;
+        if (realData.scraped_photo_ref) {
+            finalImageUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${realData.scraped_photo_ref}`;
+        }
+
         setPlaces(prevPlaces => {
             const newPlaces = prevPlaces.map(p => {
               if (p.id === placeId) {
@@ -196,7 +240,8 @@ export default function ResultsScreen({ location, onGoBack }) {
                     ...p, 
                     rating: realData.error ? "Error" : realData.scraped_rating, 
                     reviews: realData.scraped_reviews, 
-                    photoUrl: realData.scraped_photo || p.photoUrl, 
+                    // Use real image if we got it, else keep old placeholder
+                    photoUrl: finalImageUrl || p.photoUrl, 
                     description: realData.error ? realData.error : (realData.scraped_description || p.description), 
                     source: realData.error ? null : realData.source,
                     isError: !!realData.error,
@@ -250,7 +295,6 @@ export default function ResultsScreen({ location, onGoBack }) {
       const actualRating = place.rating === "N/A" || place.rating === "Error" || !place.rating ? 0 : parseFloat(place.rating);
       if (actualRating < minRating) return false;
       if (!activeCategories[place.group]) return false;
-      
       if (localSearchQuery) {
         const lowerQuery = localSearchQuery.toLowerCase();
         if (!place.tags?.name?.toLowerCase().includes(lowerQuery) && !place.description?.toLowerCase().includes(lowerQuery)) return false;
@@ -290,17 +334,14 @@ export default function ResultsScreen({ location, onGoBack }) {
     const sourceData = getSourceBadge(place.source);
     
     return (
-      <div 
-        key={place.id} title={place.description || "Point of Interest"} 
-        style={{ backgroundColor: 'white', border: '1px solid #ddd', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 2px 5px rgba(0,0,0,0.05)', marginBottom: '15px', transition: 'transform 0.2s', display: 'flex', flexDirection: 'column' }} 
-      >
+      <div key={place.id} style={{ backgroundColor: 'white', border: '1px solid #ddd', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 2px 5px rgba(0,0,0,0.05)', marginBottom: '15px', display: 'flex', flexDirection: 'column' }} >
         <div style={{ position: 'relative' }}>
             <img src={place.photoUrl} alt="Location" style={{ width: '100%', height: '120px', objectFit: 'cover' }} />
             {place.needsRealData && !isScrapingThis && ( <button onClick={() => fetchRealDataForPlace(place.id, place.tags.name, place.group)} style={{ position: 'absolute', top: '5px', right: '5px', fontSize: '11px', padding: '5px 8px', backgroundColor: 'rgba(0,0,0,0.7)', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold'}}>🔄 Load Real Data</button> )}
             {!place.needsRealData && !isScrapingThis && ( <button onClick={() => fetchRealDataForPlace(place.id, place.tags.name, place.group)} title="Refresh Data" style={{ position: 'absolute', top: '5px', right: '5px', fontSize: '12px', padding: '4px 6px', backgroundColor: 'rgba(255,255,255,0.9)', color: '#333', border: '1px solid #ccc', borderRadius: '4px', cursor: 'pointer'}}>↻</button> )}
             {isScrapingThis && ( 
                 <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: 'white', zIndex: 10 }}> 
-                    <span style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '8px' }}>Fetching Web...</span> 
+                    <span style={{ fontSize: '13px', fontWeight: 'bold' }}>Fetching Web...</span> 
                 </div> 
             )}
         </div>
@@ -312,12 +353,10 @@ export default function ResultsScreen({ location, onGoBack }) {
             <span>{place.distance.toFixed(1)} km</span> 
           </div>
           {place.description && ( <div style={{ fontSize: '11px', color: place.isError ? '#842029' : '#444', backgroundColor: place.isError ? '#ffe3e3' : '#f1f3f5', padding: '8px', borderRadius: '4px', marginBottom: '10px', fontStyle: 'italic', maxHeight: '60px', overflowY: 'auto' }}> {place.description} </div> )}
-          
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginBottom: '15px', alignItems: 'center' }}> 
             <span style={{ fontSize: '12px', backgroundColor: '#e9ecef', padding: '3px 6px', borderRadius: '4px' }}> {place.icon} {place.label} </span> 
             {sourceData && !place.isError && ( <span style={{ fontSize: '11px', fontWeight: 'bold', color: sourceData.color, border: `1px solid ${sourceData.color}`, padding: '2px 5px', borderRadius: '4px' }}> {sourceData.icon} {sourceData.name} </span> )}
           </div>
-          
           <div style={{ marginTop: 'auto' }}> 
             <a href={`https://www.google.com/maps/search/?api=1&query=${mapSearchQuery}`} target="_blank" rel="noopener noreferrer" style={{ display: 'block', textAlign: 'center', backgroundColor: '#007bff', color: 'white', textDecoration: 'none', padding: '8px', borderRadius: '5px', fontSize: '14px', fontWeight: 'bold' }}> View on Google Maps </a> 
           </div>
@@ -356,16 +395,63 @@ export default function ResultsScreen({ location, onGoBack }) {
     );
   };
 
-  const containerStyle = isFullScreen ? { position: 'fixed', inset: 0, zIndex: 1000, backgroundColor: 'rgba(255, 255, 255, 0.98)', padding: '20px', width: '100vw', height: '100vh', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' } : { backgroundColor: 'rgba(255, 255, 255, 0.95)', padding: '20px', borderRadius: '15px', boxShadow: '0 10px 25px rgba(0,0,0,0.2)', width: '100%', maxWidth: '1600px', fontFamily: 'sans-serif', maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' };
+  const containerStyle = isFullScreen 
+    ? { position: 'fixed', inset: 0, zIndex: 1000, backgroundColor: '#f8f9fa', padding: '20px', width: '100vw', height: '100vh', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' } 
+    : { backgroundColor: '#f8f9fa', padding: '20px', borderRadius: '15px', boxShadow: '0 10px 25px rgba(0,0,0,0.2)', width: '100%', maxWidth: '1600px', fontFamily: 'sans-serif', maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' };
 
   return (
     <div style={containerStyle}>
       {apiError && ( <div style={{ backgroundColor: '#fff3cd', color: '#856404', padding: '12px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ffeeba', textAlign: 'center', fontWeight: 'bold', fontSize: '14px' }}> ⚠️ {apiError} </div> )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '2px solid #eee', paddingBottom: '15px' }}>
-        <h2 style={{ margin: 0 }}>Exploring: {location?.name || 'Unknown Location'}</h2>
-        <div style={{ display: 'flex', gap: '10px' }}> <button onClick={() => setIsFullScreen(!isFullScreen)} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: '#e9ecef', border: '1px solid #ccc', borderRadius: '5px', fontWeight: 'bold' }}> {isFullScreen ? '🗗 Exit Full Screen' : '⛶ Full Screen'} </button> <button onClick={onGoBack} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: '#f0f0f0', border: '1px solid #ccc', borderRadius: '5px', fontWeight: 'bold' }}> ← Back to Search </button> </div>
+      
+      {/* BEAUTIFUL HEADER WITH WIKIPEDIA IMAGE & WEATHER */}
+      <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '20px', borderBottom: '2px solid #eee', paddingBottom: '15px', backgroundColor: 'white', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }}>
+        
+        {/* Top Cover Photo Strip */}
+        <div style={{ width: '100%', height: isFullScreen ? '150px' : '100px', backgroundColor: '#e9ecef', backgroundImage: `url(${destinationImage})`, backgroundSize: 'cover', backgroundPosition: 'center', position: 'relative' }}>
+            <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', padding: '20px' }}>
+                <h2 style={{ margin: 0, color: 'white', fontSize: isFullScreen ? '32px' : '24px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>Exploring: {location?.name || 'Unknown Location'}</h2>
+                <div style={{ display: 'flex', gap: '10px' }}> 
+                    <button onClick={() => setIsFullScreen(!isFullScreen)} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}> {isFullScreen ? '🗗 Exit Full Screen' : '⛶ Full Screen'} </button> 
+                    <button onClick={onGoBack} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}> ← Back to Search </button> 
+                </div>
+            </div>
+        </div>
+
+        {/* 5-Day Weather Forecast Strip */}
+        {weatherData && (
+            <div style={{ padding: '15px 20px', display: 'flex', gap: '15px', overflowX: 'auto', backgroundColor: '#fff' }}>
+                <div style={{ display: 'flex', alignItems: 'center', paddingRight: '15px', borderRight: '2px solid #eee', color: '#555', fontWeight: 'bold' }}>
+                    5-Day<br/>Forecast
+                </div>
+                {weatherData.map((day, i) => {
+                    const info = getWeatherInfo(day.weatherCode);
+                    return (
+                        <div key={i} style={{ minWidth: '160px', padding: '10px', backgroundColor: '#f1f3f5', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>
+                                <span>{day.date}</span>
+                                <span title={info.text}>{info.icon}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                <span style={{ color: '#d9480f' }}>H: {day.maxTemp}°C</span>
+                                <span style={{ color: '#1c7ed6' }}>L: {day.minTemp}°C</span>
+                            </div>
+                            <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
+                                <span>🌅 {day.sunrise}</span>
+                                <span>🌇 {day.sunset}</span>
+                            </div>
+                            <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
+                                <span title="Wind Speed">💨 {day.wind} km/h</span>
+                                {day.snow > 0 ? <span title="Snowfall">❄️ {day.snow} mm</span> : <span title="Rainfall">💧 {day.rain} mm</span>}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        )}
       </div>
+
       {isLoading && ( <div style={{ width: '100%', height: '5px', backgroundColor: '#e0e0e0', borderRadius: '5px', overflow: 'hidden', marginBottom: '20px' }}> <div style={{ width: `${progress}%`, height: '100%', backgroundColor: '#007bff', transition: 'width 0.3s' }} /> </div> )}
+      
       <div style={{ display: 'flex', gap: '20px', flex: 1, overflow: 'hidden' }}>
         <div style={{ width: '250px', flexShrink: 0, paddingRight: '20px', borderRight: '2px solid #eee', overflowY: 'auto' }}>
           <h3 style={{ marginTop: 0 }}>Filters</h3>
