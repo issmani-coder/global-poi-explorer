@@ -1,11 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 
 const DISTANCE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20];
-
-// Securely pulling the key from your .env file
 const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_KEY;
-
-// 👇 Make sure this is your LIVE Python URL 👇
+const UNSPLASH_KEY = import.meta.env.VITE_UNSPLASH_API_KEY;
 const PYTHON_BACKEND_URL = 'https://global-poi-explorer.onrender.com';
 
 const safeSetLocalStorage = (key, value) => {
@@ -16,6 +13,14 @@ const safeSetLocalStorage = (key, value) => {
       try { localStorage.setItem(key, value); } catch (e2) {}
     }
   }
+};
+
+// Helper to convert Degrees to Compass Directions
+const getWindDirection = (degree) => {
+    if (degree === undefined || degree === null) return '';
+    const val = Math.floor((degree / 22.5) + 0.5);
+    const arr = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+    return arr[(val % 16)];
 };
 
 const getWeatherInfo = (code) => {
@@ -42,6 +47,10 @@ export default function ResultsScreen({ location, onGoBack }) {
   const [selectedWeatherDay, setSelectedWeatherDay] = useState(null);
   const [destinationImage, setDestinationImage] = useState(null);
   
+  // Rotating Unsplash Background State
+  const [bgImages, setBgImages] = useState([]);
+  const [currentBgIndex, setCurrentBgIndex] = useState(0);
+  
   const [localSearchQuery, setLocalSearchQuery] = useState('');
   const [activeScrapingIds, setActiveScrapingIds] = useState([]);
   const [bulkScraping, setBulkScraping] = useState({ group: null, current: 0, total: 0 });
@@ -58,13 +67,31 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v22`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v23`;
+
+  // --- 1. ROTATING BACKGROUND FETCH ---
+  useEffect(() => {
+    if (UNSPLASH_KEY) {
+        fetch(`https://api.unsplash.com/photos/random?count=10&query=travel,city,landscape&orientation=landscape&client_id=${UNSPLASH_KEY}`)
+            .then(res => res.json())
+            .then(data => {
+                if (Array.isArray(data)) setBgImages(data.map(img => img.urls.regular));
+            }).catch(e => console.warn("Unsplash fetch failed", e));
+    }
+  }, []);
 
   useEffect(() => {
+    if (bgImages.length <= 1) return;
+    const interval = setInterval(() => {
+        setCurrentBgIndex((prev) => (prev + 1) % bgImages.length);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [bgImages]);
+
+  // Debounced Slider
+  useEffect(() => {
     const timer = setTimeout(() => {
-        if (visualRadiusIndex !== appliedRadiusIndex) {
-            setAppliedRadiusIndex(visualRadiusIndex);
-        }
+        if (visualRadiusIndex !== appliedRadiusIndex) setAppliedRadiusIndex(visualRadiusIndex);
     }, 800);
     return () => clearTimeout(timer);
   }, [visualRadiusIndex, appliedRadiusIndex]);
@@ -86,6 +113,7 @@ export default function ResultsScreen({ location, onGoBack }) {
     return { name: sourceStr, icon: '🌐', color: '#666' };
   };
 
+  // --- 2. DESTINATION PHOTO & UPGRADED WEATHER ---
   useEffect(() => {
     if (!location?.lat || !location?.lon) return;
 
@@ -99,12 +127,12 @@ export default function ResultsScreen({ location, onGoBack }) {
                 const pageId = Object.keys(pages)[0];
                 if (pages[pageId].original) setDestinationImage(pages[pageId].original.source);
             }
-        } catch(e) { console.warn("Could not load city image"); }
+        } catch(e) {}
     };
 
     const fetchWeather = async () => {
         try {
-            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant&hourly=temperature_2m,weather_code,wind_speed_10m&timezone=auto`;
+            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant&hourly=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation&timezone=auto`;
             const res = await fetch(weatherUrl);
             const data = await res.json();
             
@@ -118,7 +146,8 @@ export default function ResultsScreen({ location, onGoBack }) {
                 sunset: new Date(data.daily.sunset[index]).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
                 rain: data.daily.precipitation_sum[index],
                 snow: data.daily.snowfall_sum[index],
-                wind: data.daily.wind_speed_10m_max[index]
+                wind: data.daily.wind_speed_10m_max[index],
+                windDir: getWindDirection(data.daily.wind_direction_10m_dominant[index])
             }));
             
             setWeatherData(forecast);
@@ -133,12 +162,8 @@ export default function ResultsScreen({ location, onGoBack }) {
   const zipCode = location?.address?.postcode || '';
   const locationDetails = zipCode ? `${location.name} (Zip: ${zipCode})` : location?.name;
 
-  const handleDayClick = (dayIndex, dateStr) => {
-      if (selectedWeatherDay === dayIndex) {
-          setSelectedWeatherDay(null);
-          return;
-      }
-      setSelectedWeatherDay(dayIndex);
+  const handleDayClick = (dayIndex) => {
+      setSelectedWeatherDay(selectedWeatherDay === dayIndex ? null : dayIndex);
   };
 
   const renderHourlyForecast = () => {
@@ -163,10 +188,14 @@ export default function ResultsScreen({ location, onGoBack }) {
           const timeLabel = new Date(hourlyWeather.time[i]).toLocaleTimeString([], {hour: 'numeric', minute:'2-digit'});
           const wInfo = getWeatherInfo(hourlyWeather.weather_code[i]);
           hours.push(
-              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '60px', padding: '10px', backgroundColor: '#fff', borderRadius: '8px', border: '1px solid #eee' }}>
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '75px', padding: '10px', backgroundColor: '#fff', borderRadius: '8px', border: '1px solid #eee' }}>
                   <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#666' }}>{timeLabel}</span>
                   <span style={{ fontSize: '18px', margin: '5px 0' }} title={wInfo.text}>{wInfo.icon}</span>
                   <span style={{ fontSize: '12px', fontWeight: 'bold' }}>{hourlyWeather.temperature_2m[i]}°C</span>
+                  <div style={{ fontSize: '10px', color: '#888', marginTop: '4px', textAlign: 'center' }}>
+                      💨 {hourlyWeather.wind_speed_10m[i]}km/h {getWindDirection(hourlyWeather.wind_direction_10m[i])}
+                      <br/>💧 {hourlyWeather.precipitation[i]}mm
+                  </div>
               </div>
           );
       }
@@ -181,6 +210,7 @@ export default function ResultsScreen({ location, onGoBack }) {
       );
   };
 
+  // --- 3. FETCH MAP POIs ---
   useEffect(() => {
     let isMounted = true;
     const fetchPOIs = async () => {
@@ -191,12 +221,8 @@ export default function ResultsScreen({ location, onGoBack }) {
           setApiError("Invalid coordinates. Please go back and select a location.");
           return;
       }
-      let validLat = parseFloat(location.lat);
-      let validLon = parseFloat(location.lon);
-
-      if (validLat < -90 || validLat > 90) {
-          const temp = validLat; validLat = validLon; validLon = temp;
-      }
+      let validLat = parseFloat(location.lat); let validLon = parseFloat(location.lon);
+      if (validLat < -90 || validLat > 90) { const temp = validLat; validLat = validLon; validLon = temp; }
 
       try {
         const cachedData = localStorage.getItem(cacheKey);
@@ -233,28 +259,18 @@ export default function ResultsScreen({ location, onGoBack }) {
             
             const uiDesign = categorizePlace(props.categories);
             processedPlaces.push({
-              id: id,
-              pLat: props.lat,
-              pLon: props.lon,
-              distance: props.distance / 1000,
-              rating: null,
-              reviews: null,
-              photoUrl: `https://picsum.photos/seed/${id}/400/200`,
-              group: uiDesign.group,
-              icon: uiDesign.icon,
-              label: uiDesign.label,
-              tags: { name: props.name },
-              needsRealData: true,
-              description: props.formatted,
-              source: null,
-              isError: false
+              id: id, pLat: props.lat, pLon: props.lon, distance: props.distance / 1000,
+              rating: null, reviews: null, photoUrl: `https://picsum.photos/seed/${id}/400/200`,
+              group: uiDesign.group, icon: uiDesign.icon, label: uiDesign.label,
+              tags: { name: props.name }, needsRealData: true, description: props.formatted,
+              source: null, isError: false
             });
         });
           
         const finalPlaces = processedPlaces.filter(p => p.group !== 'Other');
         if (isMounted) {
             setPlaces(finalPlaces); 
-            if (finalPlaces.length === 0) setApiError("No places found in this area. Try increasing the radius.");
+            if (finalPlaces.length === 0) setApiError("No places found in this area.");
             else safeSetLocalStorage(cacheKey, JSON.stringify(finalPlaces));
         }
       } catch (error) {
@@ -278,30 +294,22 @@ export default function ResultsScreen({ location, onGoBack }) {
     const timeoutId = setTimeout(() => controller.abort(), 90000); 
 
     try {
-      const response = await fetch(`${PYTHON_BACKEND_URL}/get_details?name=${encodeURIComponent(placeName)}&location=${encodeURIComponent(location?.name || '')}&category=${encodeURIComponent(category)}`, {
-          signal: controller.signal
-      });
+      const response = await fetch(`${PYTHON_BACKEND_URL}/get_details?name=${encodeURIComponent(placeName)}&location=${encodeURIComponent(location?.name || '')}&category=${encodeURIComponent(category)}`, { signal: controller.signal });
       clearTimeout(timeoutId); 
 
       if (response.ok) {
         const realData = await response.json();
         let finalImageUrl = null;
-        if (realData.scraped_photo_ref) {
-            finalImageUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${realData.scraped_photo_ref}`;
-        }
+        if (realData.scraped_photo_ref) finalImageUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${realData.scraped_photo_ref}`;
 
         setPlaces(prevPlaces => {
             const newPlaces = prevPlaces.map(p => {
               if (p.id === placeId) {
                 return { 
-                    ...p, 
-                    rating: realData.error ? "Error" : realData.scraped_rating, 
-                    reviews: realData.scraped_reviews, 
-                    photoUrl: finalImageUrl || p.photoUrl, 
+                    ...p, rating: realData.error ? "Error" : realData.scraped_rating, 
+                    reviews: realData.scraped_reviews, photoUrl: finalImageUrl || p.photoUrl, 
                     description: realData.error ? realData.error : (realData.scraped_description || p.description), 
-                    source: realData.error ? null : realData.source,
-                    isError: !!realData.error,
-                    needsRealData: false 
+                    source: realData.error ? null : realData.source, isError: !!realData.error, needsRealData: false 
                 };
               }
               return p;
@@ -395,11 +403,7 @@ export default function ResultsScreen({ location, onGoBack }) {
             <img src={place.photoUrl} alt="Location" style={{ width: '100%', height: '120px', objectFit: 'cover' }} />
             {place.needsRealData && !isScrapingThis && ( <button onClick={() => fetchRealDataForPlace(place.id, place.tags.name, place.group)} style={{ position: 'absolute', top: '5px', right: '5px', fontSize: '11px', padding: '5px 8px', backgroundColor: 'rgba(0,0,0,0.7)', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold'}}>🔄 Load Real Data</button> )}
             {!place.needsRealData && !isScrapingThis && ( <button onClick={() => fetchRealDataForPlace(place.id, place.tags.name, place.group)} title="Refresh Data" style={{ position: 'absolute', top: '5px', right: '5px', fontSize: '12px', padding: '4px 6px', backgroundColor: 'rgba(255,255,255,0.9)', color: '#333', border: '1px solid #ccc', borderRadius: '4px', cursor: 'pointer'}}>↻</button> )}
-            {isScrapingThis && ( 
-                <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: 'white', zIndex: 10 }}> 
-                    <span style={{ fontSize: '13px', fontWeight: 'bold' }}>Fetching Web...</span> 
-                </div> 
-            )}
+            {isScrapingThis && ( <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: 'white', zIndex: 10 }}> <span style={{ fontSize: '13px', fontWeight: 'bold' }}>Fetching Web...</span> </div> )}
         </div>
         
         <div style={{ padding: '15px', display: 'flex', flexDirection: 'column', flex: 1 }}>
@@ -451,86 +455,102 @@ export default function ResultsScreen({ location, onGoBack }) {
     );
   };
 
+  // --- 4. THE LAYOUT FIX: THE "FRAME" ---
+  // The wrapper is permanently fixed to the viewport to hold the background.
+  const activeBg = bgImages.length > 0 ? bgImages[currentBgIndex] : 'https://images.unsplash.com/photo-1524661135-423995f22d0b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80';
+  
+  const wrapperStyle = {
+      position: 'fixed', inset: 0, display: 'flex', justifyContent: 'center', alignItems: 'center',
+      backgroundImage: `url(${activeBg})`, backgroundSize: 'cover', backgroundPosition: 'center',
+      transition: 'background-image 1s ease-in-out', zIndex: 1, margin: 0, padding: 0
+  };
+
+  // The container limits itself strictly to 95vh height when windowed, preventing cutoff.
   const containerStyle = isFullScreen 
-    ? { position: 'fixed', inset: 0, zIndex: 1000, backgroundColor: '#f8f9fa', padding: '20px', width: '100vw', height: '100vh', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' } 
-    : { backgroundColor: '#f8f9fa', padding: '20px', borderRadius: '15px', boxShadow: '0 10px 25px rgba(0,0,0,0.2)', width: '100%', maxWidth: '1600px', fontFamily: 'sans-serif', maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' };
+    ? { position: 'fixed', inset: 0, zIndex: 1000, backgroundColor: 'rgba(248, 249, 250, 0.97)', padding: '20px', width: '100vw', height: '100vh', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' } 
+    : { backgroundColor: 'rgba(248, 249, 250, 0.97)', padding: '20px', borderRadius: '15px', boxShadow: '0 10px 40px rgba(0,0,0,0.5)', width: '95%', maxWidth: '1600px', height: '95vh', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', position: 'relative', zIndex: 10 };
 
   return (
-    <div style={containerStyle}>
-      {apiError && ( <div style={{ backgroundColor: '#fff3cd', color: '#856404', padding: '12px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ffeeba', textAlign: 'center', fontWeight: 'bold', fontSize: '14px' }}> ⚠️ {apiError} </div> )}
+    <div style={wrapperStyle}>
+      <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(30, 40, 50, 0.6)', zIndex: 0 }}></div>
       
-      <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '20px', borderBottom: '2px solid #eee', paddingBottom: '15px', backgroundColor: 'white', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }}>
+      <div style={containerStyle}>
+        {apiError && ( <div style={{ backgroundColor: '#fff3cd', color: '#856404', padding: '12px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ffeeba', textAlign: 'center', fontWeight: 'bold', fontSize: '14px' }}> ⚠️ {apiError} </div> )}
         
-        <div style={{ width: '100%', height: isFullScreen ? '150px' : '120px', backgroundColor: '#e9ecef', backgroundImage: `url(${destinationImage})`, backgroundSize: 'cover', backgroundPosition: 'center', position: 'relative' }}>
-            <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', padding: '20px' }}>
-                <h2 style={{ margin: 0, color: 'white', fontSize: isFullScreen ? '32px' : '24px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>{locationDetails}</h2>
-                <div style={{ display: 'flex', gap: '10px' }}> 
-                    <button onClick={() => setIsFullScreen(!isFullScreen)} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}> {isFullScreen ? '🗗 Exit Full Screen' : '⛶ Full Screen'} </button> 
-                    <button onClick={onGoBack} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}> ← Back to Search </button> 
-                </div>
-            </div>
-        </div>
-
-        {weatherData && (
-            <div style={{ padding: '15px 20px', display: 'flex', flexDirection: 'column', backgroundColor: '#fff' }}>
-                
-                <div style={{ display: 'flex', gap: '15px', overflowX: 'auto', paddingBottom: '10px' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', paddingRight: '15px', borderRight: '2px solid #eee', color: '#555', fontWeight: 'bold' }}>
-                        <span>5-Day</span><span>Forecast</span>
+        <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '20px', borderBottom: '2px solid #eee', paddingBottom: '15px', backgroundColor: 'white', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px rgba(0,0,0,0.05)', flexShrink: 0 }}>
+            
+            <div style={{ width: '100%', height: isFullScreen ? '150px' : '100px', backgroundColor: '#e9ecef', backgroundImage: `url(${destinationImage})`, backgroundSize: 'cover', backgroundPosition: 'center', position: 'relative' }}>
+                <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', padding: '20px' }}>
+                    <h2 style={{ margin: 0, color: 'white', fontSize: isFullScreen ? '32px' : '24px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>{locationDetails}</h2>
+                    <div style={{ display: 'flex', gap: '10px' }}> 
+                        <button onClick={() => setIsFullScreen(!isFullScreen)} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}> {isFullScreen ? '🗗 Exit Full Screen' : '⛶ Full Screen'} </button> 
+                        <button onClick={onGoBack} style={{ padding: '8px 15px', cursor: 'pointer', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}> ← Back to Search </button> 
                     </div>
-                    {weatherData.map((day, i) => {
-                        const info = getWeatherInfo(day.weatherCode);
-                        const isSelected = selectedWeatherDay === i;
-                        return (
-                            <div key={i} onClick={() => handleDayClick(i, day.dateStr)} style={{ minWidth: '160px', padding: '10px', backgroundColor: isSelected ? '#e7f5ff' : '#f8f9fa', border: isSelected ? '1px solid #339af0' : '1px solid transparent', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '5px', cursor: 'pointer', transition: 'all 0.2s' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>
-                                    <span>{day.dateDisplay}</span>
-                                    <span title={info.text}>{info.icon}</span>
-                                </div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                                    <span style={{ color: '#d9480f' }}>H: {day.maxTemp}°C</span>
-                                    <span style={{ color: '#1c7ed6' }}>L: {day.minTemp}°C</span>
-                                </div>
-                                <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
-                                    <span>🌅 {day.sunrise}</span>
-                                    <span>🌇 {day.sunset}</span>
-                                </div>
-                                <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
-                                    <span title="Wind Speed">💨 {day.wind} km/h</span>
-                                    {day.snow > 0 ? <span title="Snowfall">❄️ {day.snow} mm</span> : <span title="Rainfall">💧 {day.rain} mm</span>}
-                                </div>
-                            </div>
-                        );
-                    })}
-                </div>
-                
-                {renderHourlyForecast()}
-                
-                <div style={{ marginTop: '10px', fontSize: '11px', color: '#2b8a3e', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    ✅ No active severe weather warnings for this location.
                 </div>
             </div>
-        )}
-      </div>
 
-      {isLoading && ( <div style={{ width: '100%', height: '5px', backgroundColor: '#e0e0e0', borderRadius: '5px', overflow: 'hidden', marginBottom: '20px' }}> <div style={{ width: `${progress}%`, height: '100%', backgroundColor: '#007bff', transition: 'width 0.3s' }} /> </div> )}
-      
-      <div style={{ display: 'flex', gap: '20px', flex: 1, overflow: 'hidden' }}>
-        <div style={{ width: '250px', flexShrink: 0, paddingRight: '20px', borderRight: '2px solid #eee', overflowY: 'auto' }}>
-          <h3 style={{ marginTop: 0 }}>Filters</h3>
-          <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Search Results:</label> <input type="text" placeholder="e.g. Pizza, Museum..." value={localSearchQuery} onChange={(e) => setLocalSearchQuery(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '5px', border: '1px solid #ccc', boxSizing: 'border-box' }} /> </div>
-          <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Radius: {visualRadiusKm} km</label> <input type="range" min="0" max="11" step="1" value={visualRadiusIndex} onChange={(e) => setVisualRadiusIndex(Number(e.target.value))} style={{ width: '100%', cursor: 'pointer' }} /> </div>
-          <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Min. Rating: {minRating} ⭐</label> <input type="range" min="0" max="5" step="0.5" value={minRating} onChange={(e) => setMinRating(Number(e.target.value))} style={{ width: '100%' }} /> </div>
-          <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Sort By:</label> <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '5px', border: '1px solid #ccc' }}> <option value="distance">Distance (Nearest First)</option> <option value="rating">User Rating (High to Low)</option> <option value="popularity">Popularity (Most Reviews)</option> </select> </div>
-          <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '10px' }}>Categories:</label> {Object.keys(activeCategories).map(cat => ( <label key={cat} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', cursor: 'pointer' }}> <input type="checkbox" checked={activeCategories[cat]} onChange={() => setActiveCategories(prev => ({...prev, [cat]: !prev[cat]}))} /> {cat} </label> ))} </div>
+            {weatherData && (
+                <div style={{ padding: '15px 20px', display: 'flex', flexDirection: 'column', backgroundColor: '#fff' }}>
+                    <div style={{ display: 'flex', gap: '15px', overflowX: 'auto', paddingBottom: '10px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', paddingRight: '15px', borderRight: '2px solid #eee', color: '#555', fontWeight: 'bold' }}>
+                            <span>5-Day</span><span>Forecast</span>
+                        </div>
+                        {weatherData.map((day, i) => {
+                            const info = getWeatherInfo(day.weatherCode);
+                            const isSelected = selectedWeatherDay === i;
+                            return (
+                                <div key={i} onClick={() => handleDayClick(i)} style={{ minWidth: '160px', padding: '10px', backgroundColor: isSelected ? '#e7f5ff' : '#f8f9fa', border: isSelected ? '1px solid #339af0' : '1px solid transparent', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '5px', cursor: 'pointer', transition: 'all 0.2s' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>
+                                        <span>{day.dateDisplay}</span>
+                                        <span title={info.text}>{info.icon}</span>
+                                    </div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                                        <span style={{ color: '#d9480f' }}>H: {day.maxTemp}°C</span>
+                                        <span style={{ color: '#1c7ed6' }}>L: {day.minTemp}°C</span>
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
+                                        <span>🌅 {day.sunrise}</span>
+                                        <span>🌇 {day.sunset}</span>
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: '#666', display: 'flex', justifyContent: 'space-between' }}>
+                                        <span title="Wind">💨 {day.wind} km/h {day.windDir}</span>
+                                        {day.snow > 0 ? <span title="Snowfall">❄️ {day.snow} mm</span> : <span title="Rainfall">💧 {day.rain} mm</span>}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    {renderHourlyForecast()}
+                    <div style={{ marginTop: '10px', fontSize: '11px', color: '#2b8a3e', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                        ✅ No active severe weather warnings for this location.
+                    </div>
+                </div>
+            )}
         </div>
-        <div style={{ flex: 1, display: 'flex', gap: '20px', overflowX: 'auto', overflowY: 'hidden', paddingBottom: '10px' }}>
-          {activeCategories.Restaurants && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🍽️ Restaurants', 'Restaurants', '#ff6b6b')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Restaurants.map(renderCard)} </div> </div> )}
-          {activeCategories.Attractions && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('📸 Attractions', 'Attractions', '#4dabf7')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Attractions.map(renderCard)} </div> </div> )}
-          {activeCategories.Hotels && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛏️ Hotels', 'Hotels', '#51cf66')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Hotels.map(renderCard)} </div> </div> )}
-          {activeCategories.Shopping && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛍️ Shopping', 'Shopping', '#fcc419')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Shopping.map(renderCard)} </div> </div> )}
-          {activeCategories.GasStations && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('⛽ Gas Stations', 'GasStations', '#868e96')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.GasStations.map(renderCard)} </div> </div> )}
-          {activeCategories.Hospitals && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🏥 Hospitals', 'Hospitals', '#e03131')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Hospitals.map(renderCard)} </div> </div> )}
+
+        {isLoading && ( <div style={{ width: '100%', height: '5px', backgroundColor: '#e0e0e0', borderRadius: '5px', overflow: 'hidden', marginBottom: '20px', flexShrink: 0 }}> <div style={{ width: `${progress}%`, height: '100%', backgroundColor: '#007bff', transition: 'width 0.3s' }} /> </div> )}
+        
+        <div style={{ display: 'flex', gap: '20px', flex: 1, overflow: 'hidden' }}>
+          <div style={{ width: '250px', flexShrink: 0, paddingRight: '20px', borderRight: '2px solid #eee', overflowY: 'auto' }}>
+            <h3 style={{ marginTop: 0 }}>Filters</h3>
+            <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Search Results:</label> <input type="text" placeholder="e.g. Pizza, Museum..." value={localSearchQuery} onChange={(e) => setLocalSearchQuery(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '5px', border: '1px solid #ccc', boxSizing: 'border-box' }} /> </div>
+            <div style={{ marginBottom: '25px' }}> 
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Radius: {visualRadiusKm} km</label> 
+                <input type="range" min="0" max="11" step="1" value={visualRadiusIndex} onChange={(e) => setVisualRadiusIndex(Number(e.target.value))} style={{ width: '100%', cursor: 'pointer' }} /> 
+                {places.length === 500 && ( <div style={{ fontSize: '11px', color: '#e03131', marginTop: '5px', fontWeight: 'bold', textAlign: 'center' }}> ⚠️ API Limit: Max 500 places reached. </div> )}
+            </div>
+            <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Min. Rating: {minRating} ⭐</label> <input type="range" min="0" max="5" step="0.5" value={minRating} onChange={(e) => setMinRating(Number(e.target.value))} style={{ width: '100%' }} /> </div>
+            <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Sort By:</label> <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '5px', border: '1px solid #ccc' }}> <option value="distance">Distance (Nearest First)</option> <option value="rating">User Rating (High to Low)</option> <option value="popularity">Popularity (Most Reviews)</option> </select> </div>
+            <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '10px' }}>Categories:</label> {Object.keys(activeCategories).map(cat => ( <label key={cat} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', cursor: 'pointer' }}> <input type="checkbox" checked={activeCategories[cat]} onChange={() => setActiveCategories(prev => ({...prev, [cat]: !prev[cat]}))} /> {cat} </label> ))} </div>
+          </div>
+          <div style={{ flex: 1, display: 'flex', gap: '20px', overflowX: 'auto', overflowY: 'hidden', paddingBottom: '10px' }}>
+            {activeCategories.Restaurants && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🍽️ Restaurants', 'Restaurants', '#ff6b6b')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Restaurants.map(renderCard)} </div> </div> )}
+            {activeCategories.Attractions && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('📸 Attractions', 'Attractions', '#4dabf7')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Attractions.map(renderCard)} </div> </div> )}
+            {activeCategories.Hotels && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛏️ Hotels', 'Hotels', '#51cf66')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Hotels.map(renderCard)} </div> </div> )}
+            {activeCategories.Shopping && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛍️ Shopping', 'Shopping', '#fcc419')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Shopping.map(renderCard)} </div> </div> )}
+            {activeCategories.GasStations && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('⛽ Gas Stations', 'GasStations', '#868e96')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.GasStations.map(renderCard)} </div> </div> )}
+            {activeCategories.Hospitals && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🏥 Hospitals', 'Hospitals', '#e03131')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Hospitals.map(renderCard)} </div> </div> )}
+          </div>
         </div>
       </div>
     </div>
