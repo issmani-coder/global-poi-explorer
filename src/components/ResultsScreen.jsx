@@ -3,6 +3,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 const DISTANCE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20];
 const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_KEY;
 const PEXELS_KEY = import.meta.env.VITE_PEXELS_API_KEY;
+const WEATHERBIT_KEY = import.meta.env.VITE_WEATHERBIT_KEY; // NEW: Live Alerts Key
 const PYTHON_BACKEND_URL = 'https://global-poi-explorer.onrender.com';
 
 const safeSetLocalStorage = (key, value) => {
@@ -34,28 +35,6 @@ const getWeatherInfo = (code) => {
     return { icon: '🌤️', text: 'Unknown' };
 };
 
-// OUR NEW ALGORITHMIC WARNING SYSTEM
-const generateWeatherWarnings = (forecastData) => {
-    if (!forecastData || forecastData.length === 0) return { active: false, messages: [] };
-    
-    let warnings = [];
-    // Only check the next 48 hours for immediate severe warnings
-    const checkDays = forecastData.slice(0, 2);
-    
-    checkDays.forEach(day => {
-        if (day.maxTemp >= 38) warnings.push(`Extreme Heat (${day.maxTemp}°C) expected.`);
-        if (day.minTemp <= -5) warnings.push(`Freezing Conditions (${day.minTemp}°C) expected.`);
-        if (day.wind >= 70) warnings.push(`High Winds (${day.wind} km/h) expected.`);
-        if (day.rain >= 40) warnings.push(`Heavy Rain (${day.rain}mm) expected.`);
-        if ([95, 96, 99].includes(day.weatherCode)) warnings.push(`Thunderstorms expected.`);
-    });
-
-    warnings = [...new Set(warnings)]; // Remove duplicates
-    
-    if (warnings.length > 0) return { active: true, messages: warnings };
-    return { active: false, messages: ["No severe conditions expected in the next 48 hours."] };
-};
-
 export default function ResultsScreen({ location, onGoBack }) {
   const [places, setPlaces] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -65,7 +44,7 @@ export default function ResultsScreen({ location, onGoBack }) {
   
   const [weatherData, setWeatherData] = useState(null);
   const [hourlyWeather, setHourlyWeather] = useState(null);
-  const [weatherWarnings, setWeatherWarnings] = useState({ active: false, messages: [] });
+  const [weatherWarnings, setWeatherWarnings] = useState({ active: false, messages: ["Fetching live alerts..."] });
   const [selectedWeatherDay, setSelectedWeatherDay] = useState(null);
   const [destinationImage, setDestinationImage] = useState(null);
   
@@ -88,7 +67,7 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v25`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v26`;
 
   // PEXELS BACKGROUND FETCHER
   useEffect(() => {
@@ -141,6 +120,7 @@ export default function ResultsScreen({ location, onGoBack }) {
   useEffect(() => {
     if (!location?.lat || !location?.lon) return;
 
+    // Fetch Destination Image (Wikipedia)
     const fetchCityImage = async () => {
         try {
             const coreName = location.name.split(',')[0].trim(); 
@@ -154,6 +134,7 @@ export default function ResultsScreen({ location, onGoBack }) {
         } catch(e) {}
     };
 
+    // Fetch Open-Meteo Data (Daily & Hourly)
     const fetchWeather = async () => {
         try {
             const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,wind_direction_10m_dominant,uv_index_max,sunshine_duration,daylight_duration,precipitation_hours&hourly=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,visibility,uv_index&timezone=auto`;
@@ -180,13 +161,36 @@ export default function ResultsScreen({ location, onGoBack }) {
             
             setWeatherData(forecast);
             setHourlyWeather(data.hourly);
-            setWeatherWarnings(generateWeatherWarnings(forecast)); // Trigger Warning Algorithm
-
         } catch(e) { console.warn("Weather fetch failed", e); }
+    };
+
+    // NEW: Fetch Real Live Alerts from Weatherbit
+    const fetchLiveAlerts = async () => {
+        if (!WEATHERBIT_KEY) return;
+        try {
+            const alertUrl = `https://api.weatherbit.io/v2.0/alerts?lat=${location.lat}&lon=${location.lon}&key=${WEATHERBIT_KEY}`;
+            const res = await fetch(alertUrl);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.alerts && data.alerts.length > 0) {
+                    // Extract just the titles of the alerts and remove duplicates
+                    const alertTitles = [...new Set(data.alerts.map(alert => alert.title))];
+                    setWeatherWarnings({ active: true, messages: alertTitles });
+                } else {
+                    setWeatherWarnings({ active: false, messages: ["No active severe weather warnings for this location."] });
+                }
+            } else {
+                setWeatherWarnings({ active: false, messages: ["Unable to fetch live alerts at this time."] });
+            }
+        } catch(e) { 
+            console.warn("Weatherbit fetch failed", e); 
+            setWeatherWarnings({ active: false, messages: ["Live alert server unreachable."] });
+        }
     };
 
     fetchCityImage();
     fetchWeather();
+    fetchLiveAlerts();
   }, [location]);
 
   const zipCode = location?.address?.postcode || '';
@@ -556,7 +560,7 @@ export default function ResultsScreen({ location, onGoBack }) {
                     
                     {renderHourlyForecast()}
                     
-                    {/* DYNAMIC WARNING SYSTEM UI */}
+                    {/* WEATHERBIT ALERTS UI */}
                     <div style={{ marginTop: '10px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
                         {weatherWarnings.active ? (
                             weatherWarnings.messages.map((msg, i) => (
