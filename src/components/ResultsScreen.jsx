@@ -3,6 +3,10 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 const DISTANCE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20];
 const GEOAPIFY_KEY = 'b98c61769e0f409e96eeb554e64de281';
 
+// 👇 YOUR LIVE PYTHON BACKEND URL 👇
+// Make sure it does NOT have a trailing slash (/) at the end!
+const PYTHON_BACKEND_URL = 'https://global-poi-explorer.onrender.com';
+
 const safeSetLocalStorage = (key, value) => {
   try { localStorage.setItem(key, value); } 
   catch (e) {
@@ -54,8 +58,8 @@ export default function ResultsScreen({ location, onGoBack }) {
 
   const getSourceBadge = (sourceStr) => {
     if (!sourceStr || sourceStr === "Not Found") return null;
+    if (sourceStr === 'Google') return { name: 'Google', icon: '🔵', color: '#4285F4' };
     if (sourceStr === 'Yelp') return { name: 'Yelp', icon: '🔴', color: '#d32323' };
-    if (sourceStr === 'TripAdvisor') return { name: 'TripAdvisor', icon: '🦉', color: '#00af87' };
     return { name: sourceStr, icon: '🌐', color: '#666' };
   };
 
@@ -66,7 +70,6 @@ export default function ResultsScreen({ location, onGoBack }) {
       setApiError(null);
       setPlaces([]); 
       
-      // STRICT GPS SANITIZER (Prevents the NaN km bug!)
       if (!location || isNaN(parseFloat(location.lat)) || isNaN(parseFloat(location.lon))) {
           setApiError("Invalid coordinates from Search Bar. Please go back and select a location from the dropdown.");
           return;
@@ -75,7 +78,6 @@ export default function ResultsScreen({ location, onGoBack }) {
       let validLat = parseFloat(location.lat);
       let validLon = parseFloat(location.lon);
 
-      // Auto-fix if coordinates are accidentally swapped
       if (validLat < -90 || validLat > 90) {
           const temp = validLat;
           validLat = validLon;
@@ -95,18 +97,14 @@ export default function ResultsScreen({ location, onGoBack }) {
       
       try {
         const radiusMeters = currentRadiusKm * 1000;
-        
-        // FIXED CATEGORIES: Removed specific clinic tags so Geoapify doesn't throw 400 errors
         const targetCategories = 'accommodation,catering,commercial,healthcare,service,tourism,entertainment';
         
         const url = `https://api.geoapify.com/v2/places?categories=${targetCategories}&filter=circle:${validLon},${validLat},${radiusMeters}&bias=proximity:${validLon},${validLat}&limit=500&apiKey=${GEOAPIFY_KEY}`;
 
-        console.log("📡 Pinging Geoapify...");
         const response = await fetch(url);
         
         if (!response.ok) {
             const errorDetails = await response.text(); 
-            console.error(`Geoapify Error: ${response.status}`, errorDetails);
             throw new Error(`Geoapify blocked the request: ${response.status}`);
         }
         
@@ -115,7 +113,6 @@ export default function ResultsScreen({ location, onGoBack }) {
         clearInterval(progressInterval);
         if (isMounted) setProgress(100);
         
-        // DEDUPLICATOR: Prevents React from crashing when Geoapify returns the same building twice
         const uniqueIds = new Set();
         const processedPlaces = [];
         
@@ -160,7 +157,6 @@ export default function ResultsScreen({ location, onGoBack }) {
             }
         }
       } catch (error) {
-        console.error("Fetch failed:", error);
         clearInterval(progressInterval); 
         if (isMounted) { setProgress(100); setApiError(error.message); }
       }
@@ -184,7 +180,8 @@ export default function ResultsScreen({ location, onGoBack }) {
     const timeoutId = setTimeout(() => controller.abort(), 90000); 
 
     try {
-      const response = await fetch(`http://127.0.0.1:5000/get_details?name=${encodeURIComponent(placeName)}&location=${encodeURIComponent(location?.name || '')}&category=${encodeURIComponent(category)}`, {
+      // Pinging your live Python backend!
+      const response = await fetch(`${PYTHON_BACKEND_URL}/get_details?name=${encodeURIComponent(placeName)}&location=${encodeURIComponent(location?.name || '')}&category=${encodeURIComponent(category)}`, {
           signal: controller.signal
       });
       
@@ -213,7 +210,7 @@ export default function ResultsScreen({ location, onGoBack }) {
         });
       }
     } catch (err) { 
-        setPlaces(prev => prev.map(p => p.id === placeId ? {...p, rating: "Error", isError: true, description: "Network Timeout. Python server unavailable.", needsRealData: false} : p));
+        setPlaces(prev => prev.map(p => p.id === placeId ? {...p, rating: "Error", isError: true, description: "Network Timeout. Server unavailable.", needsRealData: false} : p));
     } finally { 
         setActiveScrapingIds(prev => prev.filter(id => id !== placeId)); 
     }
@@ -303,7 +300,7 @@ export default function ResultsScreen({ location, onGoBack }) {
             {!place.needsRealData && !isScrapingThis && ( <button onClick={() => fetchRealDataForPlace(place.id, place.tags.name, place.group)} title="Refresh Data" style={{ position: 'absolute', top: '5px', right: '5px', fontSize: '12px', padding: '4px 6px', backgroundColor: 'rgba(255,255,255,0.9)', color: '#333', border: '1px solid #ccc', borderRadius: '4px', cursor: 'pointer'}}>↻</button> )}
             {isScrapingThis && ( 
                 <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: 'white', zIndex: 10 }}> 
-                    <span style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '8px' }}>Scraping Web...</span> 
+                    <span style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '8px' }}>Fetching Web...</span> 
                 </div> 
             )}
         </div>
@@ -311,7 +308,7 @@ export default function ResultsScreen({ location, onGoBack }) {
         <div style={{ padding: '15px', display: 'flex', flexDirection: 'column', flex: 1 }}>
           <h4 style={{ margin: '0 0 5px 0', color: '#333', fontSize: '16px' }}>{place.tags.name}</h4>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px', color: '#666', marginBottom: '10px' }}> 
-            <span>{place.isError ? <span style={{color: '#d32323', fontWeight: 'bold'}}>⚠️ Scraping Failed</span> : place.rating && place.rating !== "N/A" ? `⭐ ${place.rating} (${place.reviews})` : '⭐ No rating yet'}</span> 
+            <span>{place.isError ? <span style={{color: '#d32323', fontWeight: 'bold'}}>⚠️ Fetch Failed</span> : place.rating && place.rating !== "N/A" ? `⭐ ${place.rating} (${place.reviews})` : '⭐ No rating yet'}</span> 
             <span>{place.distance.toFixed(1)} km</span> 
           </div>
           {place.description && ( <div style={{ fontSize: '11px', color: place.isError ? '#842029' : '#444', backgroundColor: place.isError ? '#ffe3e3' : '#f1f3f5', padding: '8px', borderRadius: '4px', marginBottom: '10px', fontStyle: 'italic', maxHeight: '60px', overflowY: 'auto' }}> {place.description} </div> )}
@@ -342,16 +339,16 @@ export default function ResultsScreen({ location, onGoBack }) {
                     {isScrapingThisGroup ? (
                         <div style={{ fontSize: '12px', color: '#666', fontWeight: 'bold', display: 'flex', flexDirection: 'column' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                                <span>Scraping {bulkScraping.current} of {bulkScraping.total}...</span>
+                                <span>Fetching {bulkScraping.current} of {bulkScraping.total}...</span>
                                 <button onClick={cancelBulkScrape} style={{ fontSize: '10px', padding: '2px 5px', backgroundColor: '#ff6b6b', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer' }}>⏹️ Stop</button>
                             </div>
                         </div>
                     ) : itemsNeedingData > 0 ? (
                         <button onClick={() => fetchRealDataForCategory(group)} style={{ fontSize: '11px', padding: '6px 10px', backgroundColor: '#f8f9fa', color: '#333', border: '1px solid #ced4da', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
-                            ⬇️ Bulk Scrape {itemsNeedingData} Places
+                            ⬇️ Bulk Fetch {itemsNeedingData} Places
                         </button>
                     ) : (
-                        <span style={{ fontSize: '12px', color: '#2b8a3e', fontWeight: 'bold', display: 'block', padding: '6px 0' }}>✅ Fully Scraped</span>
+                        <span style={{ fontSize: '12px', color: '#2b8a3e', fontWeight: 'bold', display: 'block', padding: '6px 0' }}>✅ Fully Fetched</span>
                     )}
                 </div>
             )}
