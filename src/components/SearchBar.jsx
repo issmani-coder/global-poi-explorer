@@ -1,20 +1,32 @@
 import { useState, useEffect } from 'react';
 
-// Securely pulling the key from your .env file
+// Securely pulling your keys from the .env file
 const LOCATIONIQ_KEY = import.meta.env.VITE_LOCATIONIQ_KEY;
+const UNSPLASH_KEY = import.meta.env.VITE_UNSPLASH_API_KEY;
 
 export default function SearchBar({ onLocationSelect }) {
     const [query, setQuery] = useState('');
     const [suggestions, setSuggestions] = useState([]);
     const [recentSearches, setRecentSearches] = useState([]);
-    
-    const bgImage = 'https://images.unsplash.com/photo-1524661135-423995f22d0b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80';
+    const [bgImage, setBgImage] = useState('');
 
+    // 1. Load History & Dynamic Background on Boot
     useEffect(() => {
         const history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
         setRecentSearches(history);
+        
+        // Fetch a random travel image from Unsplash!
+        if (UNSPLASH_KEY) {
+            fetch(`https://api.unsplash.com/photos/random?query=travel,city,landscape&orientation=landscape&client_id=${UNSPLASH_KEY}`)
+                .then(res => res.json())
+                .then(data => setBgImage(data.urls.regular))
+                .catch(() => setBgImage('https://images.unsplash.com/photo-1524661135-423995f22d0b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80'));
+        } else {
+            setBgImage('https://images.unsplash.com/photo-1524661135-423995f22d0b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1600&q=80');
+        }
     }, []);
 
+    // 2. Debounced LocationIQ Autocomplete
     useEffect(() => {
         if (!query || query.length < 3) {
             setSuggestions([]);
@@ -38,6 +50,7 @@ export default function SearchBar({ onLocationSelect }) {
         return () => clearTimeout(delayTimer);
     }, [query]);
 
+    // 3. Handle User Selection
     const handleSelect = (locationObj) => {
         const formattedLocation = {
             lat: locationObj.lat,
@@ -55,9 +68,18 @@ export default function SearchBar({ onLocationSelect }) {
 
     return (
         <div style={{ 
-            height: '100vh', width: '100vw', display: 'flex', justifyContent: 'center', alignItems: 'center', 
-            backgroundImage: `url(${bgImage})`, backgroundSize: 'cover', backgroundPosition: 'center',
-            position: 'relative', fontFamily: 'sans-serif'
+            // BUG FIX: position: fixed forces the layout to ignore Vite's default padding!
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            display: 'flex', 
+            justifyContent: 'center', 
+            alignItems: 'center', 
+            backgroundImage: `url(${bgImage})`, 
+            backgroundSize: 'cover', 
+            backgroundPosition: 'center',
+            fontFamily: 'sans-serif',
+            margin: 0,
+            padding: 0
         }}>
             <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(30, 40, 50, 0.6)' }}></div>
             
