@@ -74,7 +74,8 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v30`;
+  // Cache bumped to v31 to clear corrupted URL caches
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v31`;
 
   useEffect(() => {
     if (PEXELS_KEY && location?.name) {
@@ -320,7 +321,6 @@ export default function ResultsScreen({ location, onGoBack }) {
             for (let i = 0; i < placeIds.length; i += chunkSize) {
                 const chunk = placeIds.slice(i, i + chunkSize);
                 
-                // ⚡ OPTIMIZED EGRESS: Only selecting the 6 columns we are missing
                 const { data: dbCacheChunk, error } = await supabase
                     .from('poi_data')
                     .select('place_id, rating, reviews, photo_ref, description, source')
@@ -337,7 +337,10 @@ export default function ResultsScreen({ location, onGoBack }) {
                     if (cachedMatch) {
                         place.rating = cachedMatch.rating;
                         place.reviews = cachedMatch.reviews;
-                        if (cachedMatch.photo_ref) place.photoUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${cachedMatch.photo_ref}`;
+                        // ⚡ BUG FIX: Proper URL Encoding for Google Photo References!
+                        if (cachedMatch.photo_ref && cachedMatch.photo_ref !== 'null' && cachedMatch.photo_ref !== 'undefined') {
+                            place.photoUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${encodeURIComponent(cachedMatch.photo_ref)}`;
+                        }
                         if (cachedMatch.description) place.description = cachedMatch.description;
                         place.source = cachedMatch.source;
                         place.needsRealData = false; 
@@ -378,7 +381,11 @@ export default function ResultsScreen({ location, onGoBack }) {
       if (response.ok) {
         const realData = await response.json();
         let finalImageUrl = null;
-        if (realData.scraped_photo_ref) finalImageUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${realData.scraped_photo_ref}`;
+        
+        // ⚡ BUG FIX: Proper URL Encoding applied here too!
+        if (realData.scraped_photo_ref && realData.scraped_photo_ref !== 'null') {
+            finalImageUrl = `${PYTHON_BACKEND_URL}/get_image?ref=${encodeURIComponent(realData.scraped_photo_ref)}`;
+        }
 
         if (!realData.error) {
             await supabase.from('poi_data').upsert({
@@ -492,7 +499,13 @@ export default function ResultsScreen({ location, onGoBack }) {
     return (
       <div key={place.id} style={{ backgroundColor: 'white', border: '1px solid #ddd', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 2px 5px rgba(0,0,0,0.05)', marginBottom: '15px', display: 'flex', flexDirection: 'column' }} >
         <div style={{ position: 'relative' }}>
-            <img src={place.photoUrl} alt="Location" style={{ width: '100%', height: '120px', objectFit: 'cover' }} />
+            {/* ⚡ BUG FIX: onError handler gracefully catches Render timeouts and shows a placeholder instead of a broken white box! */}
+            <img 
+                src={place.photoUrl} 
+                alt="Location" 
+                style={{ width: '100%', height: '120px', objectFit: 'cover' }} 
+                onError={(e) => { e.target.onerror = null; e.target.src = `https://picsum.photos/seed/${place.id}/400/200`; }}
+            />
             {place.needsRealData && !isScrapingThis && ( <button onClick={() => fetchRealDataForPlace(place.id, place.tags.name, place.group)} style={{ position: 'absolute', top: '5px', right: '5px', fontSize: '11px', padding: '5px 8px', backgroundColor: 'rgba(0,0,0,0.7)', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold'}}>🔄 Load Real Data</button> )}
             {!place.needsRealData && !isScrapingThis && ( <button onClick={() => fetchRealDataForPlace(place.id, place.tags.name, place.group)} title="Refresh Data" style={{ position: 'absolute', top: '5px', right: '5px', fontSize: '12px', padding: '4px 6px', backgroundColor: 'rgba(255,255,255,0.9)', color: '#333', border: '1px solid #ccc', borderRadius: '4px', cursor: 'pointer'}}>↻</button> )}
             {isScrapingThis && ( <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: 'white', zIndex: 10 }}> <span style={{ fontSize: '13px', fontWeight: 'bold' }}>Fetching Web...</span> </div> )}
