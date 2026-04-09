@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 
-// UPGRADED SLIDER STEPS (Up to 50km)
 const DISTANCE_STEPS = [1, 2, 3, 5, 8, 10, 15, 20, 25, 30, 40, 50];
 
 const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_KEY;
@@ -50,7 +49,6 @@ export default function ResultsScreen({ location, onGoBack }) {
   const [selectedWeatherDay, setSelectedWeatherDay] = useState(null);
   const [destinationImage, setDestinationImage] = useState(null);
   
-  // Weather Alerts Structure Updated for Links
   const [weatherWarnings, setWeatherWarnings] = useState({ 
       active: false, 
       alerts: [{ title: "Fetching live alerts...", uri: null }] 
@@ -64,7 +62,6 @@ export default function ResultsScreen({ location, onGoBack }) {
   const [bulkScraping, setBulkScraping] = useState({ group: null, current: 0, total: 0 });
   const cancelScrapeRef = useRef(false);
 
-  // START AT INDEX 3 (5 km) INSTEAD OF 1 km
   const [visualRadiusIndex, setVisualRadiusIndex] = useState(3); 
   const [appliedRadiusIndex, setAppliedRadiusIndex] = useState(3); 
   
@@ -77,7 +74,7 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v28`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v30`;
 
   useEffect(() => {
     if (PEXELS_KEY && location?.name) {
@@ -179,16 +176,11 @@ export default function ResultsScreen({ location, onGoBack }) {
             if (res.ok) {
                 const data = await res.json();
                 if (data.alerts && data.alerts.length > 0) {
-                    
-                    // Map over alerts to pull title and link. If no link exists, generate a Google Search URL.
                     const mappedAlerts = data.alerts.map(a => ({
                         title: a.title,
                         uri: a.uri || `https://www.google.com/search?q=${encodeURIComponent(a.title + ' weather alert ' + location.name)}`
                     }));
-                    
-                    // Remove duplicates by title so we don't spam the UI
                     const uniqueAlerts = Array.from(new Map(mappedAlerts.map(item => [item.title, item])).values());
-                    
                     setWeatherWarnings({ active: true, alerts: uniqueAlerts });
                 } else {
                     setWeatherWarnings({ active: false, alerts: [{ title: "No active severe weather warnings for this location.", uri: null }] });
@@ -322,11 +314,26 @@ export default function ResultsScreen({ location, onGoBack }) {
 
         if (finalPlaces.length > 0) {
             const placeIds = finalPlaces.map(p => p.id);
-            const { data: dbCache } = await supabase.from('poi_data').select('*').in('place_id', placeIds);
+            const chunkSize = 50; 
+            let allDbCache = [];
 
-            if (dbCache && dbCache.length > 0) {
+            for (let i = 0; i < placeIds.length; i += chunkSize) {
+                const chunk = placeIds.slice(i, i + chunkSize);
+                
+                // ⚡ OPTIMIZED EGRESS: Only selecting the 6 columns we are missing
+                const { data: dbCacheChunk, error } = await supabase
+                    .from('poi_data')
+                    .select('place_id, rating, reviews, photo_ref, description, source')
+                    .in('place_id', chunk);
+
+                if (dbCacheChunk && !error) {
+                    allDbCache = [...allDbCache, ...dbCacheChunk];
+                }
+            }
+
+            if (allDbCache.length > 0) {
                 finalPlaces.forEach(place => {
-                    const cachedMatch = dbCache.find(db => db.place_id === place.id);
+                    const cachedMatch = allDbCache.find(db => db.place_id === place.id);
                     if (cachedMatch) {
                         place.rating = cachedMatch.rating;
                         place.reviews = cachedMatch.reviews;
@@ -608,7 +615,6 @@ export default function ResultsScreen({ location, onGoBack }) {
                     
                     {renderHourlyForecast()}
                     
-                    {/* WEATHERBIT LIVE ALERTS UI - NOW WITH LINKS */}
                     <div style={{ marginTop: '10px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
                         {weatherWarnings.active ? (
                             weatherWarnings.alerts.map((alert, i) => (

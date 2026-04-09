@@ -13,9 +13,10 @@ export default function SearchBar({ onLocationSelect }) {
     // 1. Fetch Global History & Pexels Background on Boot
     useEffect(() => {
         const fetchHistory = async () => {
+            // ⚡ OPTIMIZED EGRESS: Only downloading the 3 columns we need
             const { data, error } = await supabase
                 .from('search_history')
-                .select('*')
+                .select('name, lat, lon')
                 .order('created_at', { ascending: false })
                 .limit(15);
             
@@ -23,7 +24,6 @@ export default function SearchBar({ onLocationSelect }) {
                 const uniqueHistory = data.filter((v, i, a) => a.findIndex(t => (t.name === v.name)) === i).slice(0, 10);
                 setRecentSearches(uniqueHistory);
             } else {
-                // Fallback to local storage if Supabase fails
                 setRecentSearches(JSON.parse(localStorage.getItem('searchHistory') || '[]'));
             }
         };
@@ -76,12 +76,10 @@ export default function SearchBar({ onLocationSelect }) {
             address: locationObj.address || {}
         };
 
-        // Optimistically update UI
         const updatedHistory = [formattedLocation, ...recentSearches.filter(s => s.name !== formattedLocation.name)].slice(0, 10);
         setRecentSearches(updatedHistory);
         localStorage.setItem('searchHistory', JSON.stringify(updatedHistory));
         
-        // Push to Supabase quietly in the background
         await supabase.from('search_history').insert([{ 
             name: formattedLocation.name, 
             lat: formattedLocation.lat, 
