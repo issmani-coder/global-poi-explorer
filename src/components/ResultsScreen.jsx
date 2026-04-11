@@ -67,14 +67,17 @@ export default function ResultsScreen({ location, onGoBack }) {
   
   const [minRating, setMinRating] = useState(0);
   const [sortBy, setSortBy] = useState('distance'); 
+  
+  // ⚡ ADDED NEW CATEGORY TO DEFAULT FILTERS
   const [activeCategories, setActiveCategories] = useState({
-    Restaurants: true, Attractions: true, Hotels: true, Shopping: true, GasStations: true, Hospitals: true
+    Restaurants: true, Attractions: true, Hotels: true, Shopping: true, Groceries: true, GasStations: true, Hospitals: true
   });
 
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v31`;
+  // Cache bumped to v32 to re-sort existing places into the new category
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v32`;
 
   useEffect(() => {
     if (PEXELS_KEY && location?.name) {
@@ -108,12 +111,19 @@ export default function ResultsScreen({ location, onGoBack }) {
 
   const categorizePlace = (categoriesArray) => {
     if (!categoriesArray) return { group: 'Other', icon: '📍', label: 'Spot' };
+
+    // ⚡ NEW PRIORITY FILTER: Catch Supermarkets, Pharmacies, and Convenience stores FIRST!
+    if (categoriesArray.some(c => c.includes('supermarket') || c.includes('convenience') || c.includes('pharmacy') || c.includes('grocery') || c.includes('hypermarket'))) {
+        return { group: 'Groceries', icon: '🛒', label: 'Grocery/Rx' };
+    }
+
     if (categoriesArray.some(c => c.startsWith('accommodation'))) return { group: 'Hotels', icon: '🛏️', label: 'Hotel' };
     if (categoriesArray.some(c => c.startsWith('catering'))) return { group: 'Restaurants', icon: '🍽️', label: 'Dining' };
     if (categoriesArray.some(c => c.startsWith('commercial'))) return { group: 'Shopping', icon: '🛍️', label: 'Shop' };
     if (categoriesArray.some(c => c.includes('fuel'))) return { group: 'GasStations', icon: '⛽', label: 'Gas' };
     if (categoriesArray.some(c => c.startsWith('healthcare'))) return { group: 'Hospitals', icon: '🏥', label: 'Medical' };
     if (categoriesArray.some(c => c.startsWith('tourism') || c.startsWith('entertainment'))) return { group: 'Attractions', icon: '📸', label: 'Attraction' };
+    
     return { group: 'Other', icon: '📍', label: 'Spot' };
   };
 
@@ -421,7 +431,6 @@ export default function ResultsScreen({ location, onGoBack }) {
     }
   };
 
-  // ⚡ FIX: BATCHED SCRAPING WITH DELAYS TO PREVENT RATE LIMITING ⚡
   const fetchRealDataForCategory = async (groupName) => {
       const targets = places.filter(p => p.group === groupName && p.needsRealData);
       if (targets.length === 0) return;
@@ -442,12 +451,10 @@ export default function ResultsScreen({ location, onGoBack }) {
                   setBulkScraping({ group: groupName, current: completedCount, total: targets.length });
               }
               
-              // ⚡ MANDATORY COOLDOWN: 1.5 seconds between each request to prevent timeouts
               await new Promise(resolve => setTimeout(resolve, 1500));
           }
       };
 
-      // ⚡ CONCURRENCY DROP: Running 2 workers instead of 3 to ease server load
       const workers = Array(2).fill(0).map(() => worker()); 
       await Promise.all(workers);
       
@@ -491,11 +498,13 @@ export default function ResultsScreen({ location, onGoBack }) {
     return result;
   }, [places, minRating, sortBy, activeCategories, localSearchQuery]);
 
+  // ⚡ ADDED GROCERIES TO THE COLUMNS OBJECT
   const columns = {
     Restaurants: filteredAndSortedPlaces.filter(p => p.group === 'Restaurants'),
     Attractions: filteredAndSortedPlaces.filter(p => p.group === 'Attractions'),
     Hotels: filteredAndSortedPlaces.filter(p => p.group === 'Hotels'),
     Shopping: filteredAndSortedPlaces.filter(p => p.group === 'Shopping'),
+    Groceries: filteredAndSortedPlaces.filter(p => p.group === 'Groceries'), // NEW!
     GasStations: filteredAndSortedPlaces.filter(p => p.group === 'GasStations'),
     Hospitals: filteredAndSortedPlaces.filter(p => p.group === 'Hospitals'),
   };
@@ -671,6 +680,10 @@ export default function ResultsScreen({ location, onGoBack }) {
             {activeCategories.Attractions && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('📸 Attractions', 'Attractions', '#4dabf7')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Attractions.map(renderCard)} </div> </div> )}
             {activeCategories.Hotels && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛏️ Hotels', 'Hotels', '#51cf66')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Hotels.map(renderCard)} </div> </div> )}
             {activeCategories.Shopping && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛍️ Shopping', 'Shopping', '#fcc419')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Shopping.map(renderCard)} </div> </div> )}
+            
+            {/* ⚡ THE NEW GROCERIES COLUMN ADDED TO RENDER */}
+            {activeCategories.Groceries && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛒 Groceries & Rx', 'Groceries', '#20c997')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Groceries.map(renderCard)} </div> </div> )}
+            
             {activeCategories.GasStations && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('⛽ Gas Stations', 'GasStations', '#868e96')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.GasStations.map(renderCard)} </div> </div> )}
             {activeCategories.Hospitals && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🏥 Hospitals', 'Hospitals', '#e03131')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Hospitals.map(renderCard)} </div> </div> )}
           </div>
