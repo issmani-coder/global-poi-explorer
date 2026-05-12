@@ -67,8 +67,6 @@ export default function ResultsScreen({ location, onGoBack }) {
   
   const [minRating, setMinRating] = useState(0);
   const [sortBy, setSortBy] = useState('distance'); 
-  
-  // ⚡ ADDED NEW CATEGORY TO DEFAULT FILTERS
   const [activeCategories, setActiveCategories] = useState({
     Restaurants: true, Attractions: true, Hotels: true, Shopping: true, Groceries: true, GasStations: true, Hospitals: true
   });
@@ -76,8 +74,7 @@ export default function ResultsScreen({ location, onGoBack }) {
   const currentRadiusKm = DISTANCE_STEPS[appliedRadiusIndex];
   const visualRadiusKm = DISTANCE_STEPS[visualRadiusIndex];
   
-  // Cache bumped to v32 to re-sort existing places into the new category
-  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v32`;
+  const cacheKey = `poiCache_${location?.lat}_${location?.lon}_${currentRadiusKm}_v33`;
 
   useEffect(() => {
     if (PEXELS_KEY && location?.name) {
@@ -112,7 +109,6 @@ export default function ResultsScreen({ location, onGoBack }) {
   const categorizePlace = (categoriesArray) => {
     if (!categoriesArray) return { group: 'Other', icon: '📍', label: 'Spot' };
 
-    // ⚡ NEW PRIORITY FILTER: Catch Supermarkets, Pharmacies, and Convenience stores FIRST!
     if (categoriesArray.some(c => c.includes('supermarket') || c.includes('convenience') || c.includes('pharmacy') || c.includes('grocery') || c.includes('hypermarket'))) {
         return { group: 'Groceries', icon: '🛒', label: 'Grocery/Rx' };
     }
@@ -264,6 +260,7 @@ export default function ResultsScreen({ location, onGoBack }) {
       );
   };
 
+  // --- ⚡ UPGRADED: PARALLEL BUCKET FETCHING ---
   useEffect(() => {
     let isMounted = true;
     const fetchPOIs = async () => {
@@ -290,38 +287,57 @@ export default function ResultsScreen({ location, onGoBack }) {
       
       try {
         const radiusMeters = currentRadiusKm * 1000;
-        const targetCategories = 'accommodation,catering,commercial,healthcare,service,tourism,entertainment';
-        const url = `https://api.geoapify.com/v2/places?categories=${targetCategories}&filter=circle:${validLon},${validLat},${radiusMeters}&bias=proximity:${validLon},${validLat}&limit=500&apiKey=${GEOAPIFY_KEY}`;
-
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`Geoapify blocked the request: ${response.status}`);
         
-        const data = await response.json();
+        // ⚡ Splitting categories so dense cities don't cannibalize the 500 limit
+        const categoryBuckets = [
+            'accommodation',           // Hotels
+            'catering',                // Restaurants
+            'commercial',              // Shopping & Groceries
+            'healthcare',              // Hospitals
+            'service.vehicle.fuel',    // Gas Stations (Prevents ATMs from stealing limits)
+            'tourism,entertainment'    // Attractions
+        ];
+
+        // Fetch each bucket simultaneously (120 per bucket * 6 buckets = Max 720 perfectly balanced places)
+        const fetchPromises = categoryBuckets.map(cat => {
+            const url = `https://api.geoapify.com/v2/places?categories=${cat}&filter=circle:${validLon},${validLat},${radiusMeters}&bias=proximity:${validLon},${validLat}&limit=120&apiKey=${GEOAPIFY_KEY}`;
+            return fetch(url).then(res => res.ok ? res.json() : null).catch(() => null);
+        });
+
+        const results = await Promise.all(fetchPromises);
+        
         clearInterval(progressInterval);
         if (isMounted) setProgress(100);
         
         const uniqueIds = new Set();
         const processedPlaces = [];
         
-        data.features.forEach((feature, index) => {
-            if (!feature.properties.name) return; 
-            const props = feature.properties;
-            const id = props.place_id || `temp_${index}`;
-            if (uniqueIds.has(id)) return; 
-            uniqueIds.add(id);
+        results.forEach(data => {
+            if (!data || !data.features) return;
             
-            const uiDesign = categorizePlace(props.categories);
-            processedPlaces.push({
-              id: id, pLat: props.lat, pLon: props.lon, distance: props.distance / 1000,
-              rating: null, reviews: null, photoUrl: `https://picsum.photos/seed/${id}/400/200`,
-              group: uiDesign.group, icon: uiDesign.icon, label: uiDesign.label,
-              tags: { name: props.name }, needsRealData: true, description: props.formatted,
-              source: null, isError: false
+            data.features.forEach((feature, index) => {
+                if (!feature.properties.name) return; 
+                const props = feature.properties;
+                const id = props.place_id || `temp_${index}_${Math.random()}`;
+                
+                // Deduplicate items that might appear in multiple buckets
+                if (uniqueIds.has(id)) return; 
+                uniqueIds.add(id);
+                
+                const uiDesign = categorizePlace(props.categories);
+                processedPlaces.push({
+                  id: id, pLat: props.lat, pLon: props.lon, distance: props.distance / 1000,
+                  rating: null, reviews: null, photoUrl: `https://picsum.photos/seed/${id}/400/200`,
+                  group: uiDesign.group, icon: uiDesign.icon, label: uiDesign.label,
+                  tags: { name: props.name }, needsRealData: true, description: props.formatted,
+                  source: null, isError: false
+                });
             });
         });
           
         const finalPlaces = processedPlaces.filter(p => p.group !== 'Other');
 
+        // Check Supabase Database for existing scraped data
         if (finalPlaces.length > 0) {
             const placeIds = finalPlaces.map(p => p.id);
             const chunkSize = 50; 
@@ -329,7 +345,6 @@ export default function ResultsScreen({ location, onGoBack }) {
 
             for (let i = 0; i < placeIds.length; i += chunkSize) {
                 const chunk = placeIds.slice(i, i + chunkSize);
-                
                 const { data: dbCacheChunk, error } = await supabase
                     .from('poi_data')
                     .select('place_id, rating, reviews, photo_ref, description, source')
@@ -498,13 +513,12 @@ export default function ResultsScreen({ location, onGoBack }) {
     return result;
   }, [places, minRating, sortBy, activeCategories, localSearchQuery]);
 
-  // ⚡ ADDED GROCERIES TO THE COLUMNS OBJECT
   const columns = {
     Restaurants: filteredAndSortedPlaces.filter(p => p.group === 'Restaurants'),
     Attractions: filteredAndSortedPlaces.filter(p => p.group === 'Attractions'),
     Hotels: filteredAndSortedPlaces.filter(p => p.group === 'Hotels'),
     Shopping: filteredAndSortedPlaces.filter(p => p.group === 'Shopping'),
-    Groceries: filteredAndSortedPlaces.filter(p => p.group === 'Groceries'), // NEW!
+    Groceries: filteredAndSortedPlaces.filter(p => p.group === 'Groceries'), 
     GasStations: filteredAndSortedPlaces.filter(p => p.group === 'GasStations'),
     Hospitals: filteredAndSortedPlaces.filter(p => p.group === 'Hospitals'),
   };
@@ -669,7 +683,6 @@ export default function ResultsScreen({ location, onGoBack }) {
             <div style={{ marginBottom: '25px' }}> 
                 <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Radius: {visualRadiusKm} km</label> 
                 <input type="range" min="0" max={DISTANCE_STEPS.length - 1} step="1" value={visualRadiusIndex} onChange={(e) => setVisualRadiusIndex(Number(e.target.value))} style={{ width: '100%', cursor: 'pointer' }} /> 
-                {places.length === 500 && ( <div style={{ fontSize: '11px', color: '#e03131', marginTop: '5px', fontWeight: 'bold', textAlign: 'center', backgroundColor: '#ffe3e3', padding: '5px', borderRadius: '4px' }}> ⚠️ API Limit: Max 500 places reached. </div> )}
             </div>
             <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Min. Rating: {minRating} ⭐</label> <input type="range" min="0" max="5" step="0.5" value={minRating} onChange={(e) => setMinRating(Number(e.target.value))} style={{ width: '100%' }} /> </div>
             <div style={{ marginBottom: '25px' }}> <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>Sort By:</label> <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '5px', border: '1px solid #ccc' }}> <option value="distance">Distance (Nearest First)</option> <option value="rating">User Rating (High to Low)</option> <option value="popularity">Popularity (Most Reviews)</option> </select> </div>
@@ -680,10 +693,7 @@ export default function ResultsScreen({ location, onGoBack }) {
             {activeCategories.Attractions && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('📸 Attractions', 'Attractions', '#4dabf7')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Attractions.map(renderCard)} </div> </div> )}
             {activeCategories.Hotels && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛏️ Hotels', 'Hotels', '#51cf66')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Hotels.map(renderCard)} </div> </div> )}
             {activeCategories.Shopping && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛍️ Shopping', 'Shopping', '#fcc419')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Shopping.map(renderCard)} </div> </div> )}
-            
-            {/* ⚡ THE NEW GROCERIES COLUMN ADDED TO RENDER */}
             {activeCategories.Groceries && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🛒 Groceries & Rx', 'Groceries', '#20c997')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Groceries.map(renderCard)} </div> </div> )}
-            
             {activeCategories.GasStations && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('⛽ Gas Stations', 'GasStations', '#868e96')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.GasStations.map(renderCard)} </div> </div> )}
             {activeCategories.Hospitals && ( <div style={{ minWidth: '300px', maxWidth: '300px', display: 'flex', flexDirection: 'column' }}> {renderColumnHeader('🏥 Hospitals', 'Hospitals', '#e03131')} <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}> {columns.Hospitals.map(renderCard)} </div> </div> )}
           </div>
